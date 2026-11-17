@@ -9,6 +9,9 @@ set -euo pipefail
 PROMPT_PARTS=()
 MAX_ITERATIONS=0
 COMPLETION_PROMISE="null"
+VERIFY_CMD=""
+MAX_MINUTES=0
+ALLOW_BLOCKED=false
 
 # Parse options and positional arguments
 while [[ $# -gt 0 ]]; do
@@ -26,6 +29,12 @@ ARGUMENTS:
 OPTIONS:
   --max-iterations <n>           Maximum iterations before auto-stop (default: unlimited)
   --completion-promise '<text>'  Promise phrase (USE QUOTES for multi-word)
+  --verify '<command>'           Shell command that must exit 0 before the loop may end
+                                 (checked when the promise is given, or at every stop if
+                                 no promise is set). Its failing output is fed back to you.
+  --max-minutes <n>              Wall-clock budget for the whole loop (default: unlimited)
+  --allow-blocked                Let the agent end the loop honestly with
+                                 <promise>BLOCKED: reason</promise> when it cannot proceed
   -h, --help                     Show this help message
 
 DESCRIPTION:
@@ -44,10 +53,14 @@ EXAMPLES:
   /wreck-it-ralph:ralph --max-iterations 10 Fix the auth bug
   /wreck-it-ralph:ralph Refactor cache layer  (runs forever)
   /wreck-it-ralph:ralph --completion-promise 'TASK COMPLETE' Create a REST API
+  /wreck-it-ralph:ralph Make the test suite green --verify 'npm test' --max-iterations 15
+  /wreck-it-ralph:ralph Fix flaky login test --verify 'npm test -- login' --allow-blocked --max-minutes 30
 
 STOPPING:
-  Reaching --max-iterations, detecting --completion-promise, or running
-  /wreck-it-ralph:cancel-ralph at any time.
+  The promise (if set) is given AND --verify (if set) passes; BLOCKED (with
+  --allow-blocked); --max-iterations or --max-minutes reached; or
+  /wreck-it-ralph:cancel-ralph at any time. The outcome is recorded in
+  .claude/ralph-loop.last.md.
 
 MONITORING:
   # View current iteration:
@@ -101,6 +114,20 @@ HELP_EOF
       COMPLETION_PROMISE="$2"
       shift 2
       ;;
+    --verify)
+      [[ -n "${2:-}" ]] || { echo "❌ Error: --verify requires a command, e.g. --verify 'npm test'" >&2; exit 1; }
+      VERIFY_CMD="$2"
+      shift 2
+      ;;
+    --max-minutes)
+      [[ "${2:-}" =~ ^[0-9]+$ ]] || { echo "❌ Error: --max-minutes must be a non-negative integer, got: ${2:-<none>}" >&2; exit 1; }
+      MAX_MINUTES="$2"
+      shift 2
+      ;;
+    --allow-blocked)
+      ALLOW_BLOCKED=true
+      shift
+      ;;
     *)
       # Non-option argument - collect all as prompt parts
       PROMPT_PARTS+=("$1")
@@ -130,12 +157,14 @@ fi
 # Create state file for stop hook (markdown with YAML frontmatter)
 mkdir -p .claude
 
-# Quote completion promise for YAML if it contains special chars or is not null
+# Strings are stored as JSON strings (valid YAML too), so quotes and backslashes survive.
+json_str() { jq -Rn --arg v "$1" '$v'; }
 if [[ -n "$COMPLETION_PROMISE" ]] && [[ "$COMPLETION_PROMISE" != "null" ]]; then
-  COMPLETION_PROMISE_YAML="\"$COMPLETION_PROMISE\""
+  COMPLETION_PROMISE_YAML="$(json_str "$COMPLETION_PROMISE")"
 else
   COMPLETION_PROMISE_YAML="null"
 fi
+if [[ -n "$VERIFY_CMD" ]]; then VERIFY_YAML="$(json_str "$VERIFY_CMD")"; else VERIFY_YAML="null"; fi
 
 cat > .claude/ralph-loop.local.md <<EOF
 ---
@@ -144,7 +173,11 @@ iteration: 1
 session_id: ${CLAUDE_CODE_SESSION_ID:-}
 max_iterations: $MAX_ITERATIONS
 completion_promise: $COMPLETION_PROMISE_YAML
+verify: $VERIFY_YAML
+max_minutes: $MAX_MINUTES
+allow_blocked: $ALLOW_BLOCKED
 started_at: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+started_epoch: $(date +%s)
 ---
 
 $PROMPT
@@ -156,7 +189,9 @@ cat <<EOF
 
 Iteration: 1
 Max iterations: $(if [[ $MAX_ITERATIONS -gt 0 ]]; then echo $MAX_ITERATIONS; else echo "unlimited"; fi)
-Completion promise: $(if [[ "$COMPLETION_PROMISE" != "null" ]]; then echo "${COMPLETION_PROMISE//\"/} (ONLY output when TRUE - do not lie!)"; else echo "none (runs forever)"; fi)
+Completion promise: $(if [[ "$COMPLETION_PROMISE" != "null" ]]; then echo "${COMPLETION_PROMISE//\"/} (ONLY output when TRUE - do not lie!)"; else echo "none"; fi)
+Verify command: $(if [[ -n "$VERIFY_CMD" ]]; then echo "$VERIFY_CMD (must pass before the loop can end)"; else echo "none"; fi)
+Time budget: $(if [[ $MAX_MINUTES -gt 0 ]]; then echo "$MAX_MINUTES min"; else echo "unlimited"; fi)$( [[ "$ALLOW_BLOCKED" == true ]] && printf '\nBlocked exit: allowed via <promise>BLOCKED: reason</promise>')
 
 The stop hook is now active. When you try to exit, the SAME PROMPT will be
 fed back to you. You'll see your previous work in files, creating a
@@ -164,8 +199,8 @@ self-referential loop where you iteratively improve on the same task.
 
 To monitor: head -10 .claude/ralph-loop.local.md
 
-Stop it any time with /wreck-it-ralph:cancel-ralph. Without --max-iterations
-or --completion-promise it runs until you cancel it.
+Stop it any time with /wreck-it-ralph:cancel-ralph. Without --max-iterations,
+--max-minutes, --completion-promise or --verify it runs until you cancel it.
 
 🔄
 EOF

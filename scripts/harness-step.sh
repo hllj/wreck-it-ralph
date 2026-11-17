@@ -16,13 +16,19 @@
 #                                Prints PASSING, STATS, COMMITS, STUCK, NEXT=continue|stop, REASON, CODE
 #   summary <reason> <code>      print + save the run summary (.harness/last-run.md)
 #   note <agent> ok|failed|skipped [text]   append one line to this session's notes (text may come from stdin)
+#   ledger add <agent> [--cost USD] [--tokens N] [--input-tokens N] [--output-tokens N] [--ms N] [--turns N] [--mode M]
+#                                record what an agent run cost (headless: parsed from claude's JSON output;
+#                                interactive: the orchestrator passes the usage the Agent tool reported)
+#   ledger total                 COST=, TOKENS=, MINUTES=, RUNS= for the current run
+#   budget                       REMAINING_USD= (empty when no cost cap) for the current run
 #   verify                       run gate-owned verify commands for claimed features (also run
 #                                automatically before the tester and at `end`); failures -> `fail`
 #   trust status|show|accept|accept-verify   review/record the risky repo-supplied config (README "Trust")
 #   unlock                       remove a stale loop lock (use only when no loop is running)
 #
 # begin --new-run stop codes: 4 dirty tree, 5 config not trusted, 6 git identity missing, 7 another loop running
-# begin/end stop codes:       2 max sessions, 3 stuck, 8 waiting for a human answer, 9 blocked by dependencies
+# begin/end stop codes:       2 max sessions, 3 stuck, 8 waiting for a human answer, 9 blocked by dependencies,
+#                             10 budget exhausted (cost/tokens/wall time), 11 session diff over budget.max_diff_lines
 
 set -euo pipefail
 
@@ -150,6 +156,72 @@ SNAP_PROPS="$HARNESS_DIR/.proposals_snapshot.json"
 LIST_LOCK="$HARNESS_DIR/.feature_list.lock.json"
 PROPS="$HARNESS_DIR/proposals.json"
 
+LEDGER="$HARNESS_DIR/ledger.jsonl"
+bcfg() { jq -r --arg k "$1" '(.budget // {})[$k] // 0' "$CFG"; }   # budget.<key>, 0 = unlimited
+num_ok() { [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]; }
+
+ledger_totals() { # -> "cost tokens runs" for the current run (state .run)
+  local run; run="$(st_get run)"
+  if [[ -z "$run" || ! -f "$LEDGER" ]]; then echo "0 0 0"; return 0; fi
+  jq -rs --argjson run "$run" '[.[] | select(.run == $run)] as $e
+    | "\([$e[].cost_usd // 0] | add // 0) \([$e[] | (.input_tokens // 0) + (.output_tokens // 0) + (.tokens // 0)] | add // 0) \($e | length)"' "$LEDGER" 2>/dev/null || echo "0 0 0"
+}
+run_minutes() { local run; run="$(st_get run)"; if [[ -n "$run" ]]; then echo $(( ($(date +%s) - run) / 60 )); else echo 0; fi; }
+
+cmd_ledger() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    add)
+      local agent="${1:?agent required}" cost="" tokens="" itok="" otok="" ms="" turns="" mode="interactive"; shift
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --cost) cost="${2:-}"; shift 2 ;; --tokens) tokens="${2:-}"; shift 2 ;;
+          --input-tokens) itok="${2:-}"; shift 2 ;; --output-tokens) otok="${2:-}"; shift 2 ;;
+          --ms) ms="${2:-}"; shift 2 ;; --turns) turns="${2:-}"; shift 2 ;; --mode) mode="${2:-}"; shift 2 ;;
+          *) die "unknown ledger option: $1" ;;
+        esac
+      done
+      local v; for v in "$cost" "$tokens" "$itok" "$otok" "$ms" "$turns"; do [[ -z "$v" ]] || num_ok "$v" || die "ledger values must be numbers, got: $v"; done
+      local run session; run="$(st_get run)"; session="$(st_get session)"
+      jq -cn --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson run "${run:-0}" --argjson session "${session:-0}" \
+        --arg agent "$agent" --arg mode "$mode" --arg cost "$cost" --arg tokens "$tokens" --arg itok "$itok" --arg otok "$otok" --arg ms "$ms" --arg turns "$turns" '
+        def n($x): if $x == "" then null else ($x | tonumber) end;
+        {at: $at, run: $run, session: $session, agent: $agent, mode: $mode, cost_usd: n($cost), tokens: n($tokens),
+         input_tokens: n($itok), output_tokens: n($otok), duration_ms: n($ms), turns: n($turns)} | with_entries(select(.value != null))' >> "$LEDGER"
+      echo "recorded"
+      ;;
+    total)
+      local t; read -r -a t <<<"$(ledger_totals)"
+      emit COST "${t[0]}"; emit TOKENS "${t[1]}"; emit MINUTES "$(run_minutes)"; emit RUNS "${t[2]}"
+      ;;
+    *) die "usage: ledger add|total" ;;
+  esac
+}
+
+cmd_budget() {
+  local cap; cap="$(bcfg max_cost_usd)"
+  if [[ "$cap" == "0" ]]; then emit REMAINING_USD ""; return 0; fi
+  local t; read -r -a t <<<"$(ledger_totals)"
+  emit REMAINING_USD "$(jq -n --argjson c "$cap" --argjson s "${t[0]}" '[$c - $s, 0] | max | . * 100 | floor / 100')"
+}
+
+budget_exhausted() { # prints a reason when a run budget is used up
+  local t cap; read -r -a t <<<"$(ledger_totals)"
+  cap="$(bcfg max_cost_usd)"
+  if [[ "$cap" != "0" ]] && jq -en --argjson c "$cap" --argjson s "${t[0]}" '$s >= $c' >/dev/null; then echo "cost \$${t[0]} reached budget.max_cost_usd \$$cap"; return 0; fi
+  cap="$(bcfg max_tokens)"
+  if [[ "$cap" != "0" && "${t[1]%.*}" -ge "$cap" ]]; then echo "${t[1]%.*} tokens reached budget.max_tokens $cap"; return 0; fi
+  cap="$(bcfg max_wall_minutes)"
+  if [[ "$cap" != "0" && "$(run_minutes)" -ge "$cap" ]]; then echo "$(run_minutes) minutes reached budget.max_wall_minutes $cap"; return 0; fi
+  return 1
+}
+
+session_diff_lines() { # lines added+removed since the session started, outside .harness/
+  local base; base="$(st_get head_before)"
+  if [[ -z "$base" || "$base" == none ]]; then echo 0; return 0; fi
+  git diff --numstat "$base" HEAD -- . ':!.harness' 2>/dev/null | awk '$1 ~ /^[0-9]+$/ {s += $1 + $2} END {print s + 0}'
+}
+
 ids_json() { "$FL" ids --status "$1" | jq -R -s -c 'split("\n")|map(select(length>0))'; }
 
 cmd_begin() {
@@ -202,6 +274,9 @@ cmd_begin() {
   fi
   if [[ "$stuck" -ge "$limit" ]]; then
     emit DECISION stop; emit REASON "stuck: no progress for $limit sessions"; emit CODE 3; return 0
+  fi
+  local spent; if spent="$(budget_exhausted)"; then
+    emit DECISION stop; emit REASON "budget exhausted: $spent"; emit CODE 10; return 0
   fi
   if "$FL" done; then
     if final_verification; then
@@ -375,13 +450,23 @@ cmd_end() {
   emit PASSING "$after"; emit STATS "$("$FL" stats)"
   emit COMMITS "$(git rev-list --count "$(st_get head_before)"..HEAD 2>/dev/null || echo '?')"
   emit STUCK "$stuck/$limit"
+  local maxd lines large=0; maxd="$(bcfg max_diff_lines)"; lines="$(session_diff_lines)"
+  emit DIFF_LINES "$lines"
+  if [[ "$maxd" != "0" && "$lines" -gt "$maxd" ]]; then
+    large=1; emit WARN "session $n changed $lines lines (budget.max_diff_lines $maxd); review the commits"
+  fi
   [[ -n "$unauth" ]] && emit UNVERIFIED_RESET "${unauth# }"
   [[ -n "$(st_get verify_failed)" ]] && emit VERIFY_FAILED "$(st_get verify_failed)"
   [[ -n "$escalated" ]] && emit NEEDS_HUMAN "${escalated# }"
   [[ $REVERTED -eq 1 ]] && emit WARN "a backlog approval made during the session was undone; approve between sessions"
   [[ $COMMIT_FAILED -eq 1 ]] && emit WARN "a git commit failed; check git user.name/user.email"
+  local spent
   if [[ "$stuck" -ge "$limit" ]]; then
     emit NEXT stop; emit REASON "stuck: no progress for $limit sessions"; emit CODE 3
+  elif [[ $large -eq 1 && "$(jq -r '(.budget // {}).on_large_diff // "warn"' "$CFG")" == "stop" ]]; then
+    emit NEXT stop; emit REASON "large diff: session $n changed $lines lines (over budget.max_diff_lines $maxd); review it, then run again"; emit CODE 11
+  elif spent="$(budget_exhausted)"; then
+    emit NEXT stop; emit REASON "budget exhausted: $spent"; emit CODE 10
   else
     emit NEXT continue
   fi
@@ -410,6 +495,8 @@ cmd_summary() {
     echo "- **Stop reason:** $reason (exit code $code)"
     echo "- **Features:** $("$FL" stats)"
     echo "- **Sessions this run:** $(st_get ran)"
+    local t; read -r -a t <<<"$(ledger_totals)"
+    echo "- **Spend this run:** \$${t[0]} | ${t[1]} tokens | $(run_minutes) min | ${t[2]} agent runs recorded"
     echo
     echo "## Features"
     echo
@@ -452,6 +539,8 @@ case "$cmd" in
   summary)     cmd_summary "$@" ;;
   trust)       cmd_trust "$@" ;;
   note)        cmd_note "$@" ;;
+  ledger)      cmd_ledger "$@" ;;
+  budget)      cmd_budget ;;
   unlock)      cmd_unlock ;;
-  *) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
+  *) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
 esac

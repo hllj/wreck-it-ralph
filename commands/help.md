@@ -35,7 +35,7 @@ Every agent runs in a **fresh context**, and all state lives on disk (`.harness/
 - The loop stops when everything passes, at the session cap, when stuck, when only human-blocked work remains (code 8), or when dependencies can never pass (code 9).
 - Only one loop runs per project.
 
-Config lives in `.harness/config.json`: pipeline, limits, `verify_static`, `escalate_after_failures`, `final_verify_command`, `allow_dirty`. Details are in README.md.
+Config lives in `.harness/config.json`: pipeline, limits, `verify_static`, `escalate_after_failures`, `budget` (`max_cost_usd`, `max_tokens`, `max_wall_minutes`, `max_diff_lines`, `on_large_diff`), `final_verify_command`, `allow_dirty`. Spend per agent run is recorded in `.harness/ledger.jsonl`. Stop codes 10 and 11 mean a budget is used up and a session diff is too large. Details are in README.md.
 
 # Part 2: The in-session Ralph loop
 
@@ -77,6 +77,11 @@ Start a Ralph loop in your current session.
 **Options:**
 - `--max-iterations <n>` - Max iterations before auto-stop
 - `--completion-promise <text>` - Promise phrase to signal completion
+- `--verify '<command>'` - Must exit 0 before the loop can end. Its failing output is fed back each iteration.
+- `--max-minutes <n>` - Wall-clock budget for the loop
+- `--allow-blocked` - Allow an honest exit with `<promise>BLOCKED: reason</promise>`
+
+Every ending is recorded in `.claude/ralph-loop.last.md`. `/wreck-it-ralph:add --from-ralph` promotes the task to backlog features.
 
 **How it works:**
 1. Creates `.claude/ralph-loop.local.md` state file

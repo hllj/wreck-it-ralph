@@ -1,14 +1,16 @@
 ---
 description: "Add features to the backlog at any time: a planner agent turns your request into small verifiable features, proposed for your approval"
-argument-hint: "\"<feature request or epic>\" [--approve]"
-allowed-tools: ["Bash(.harness/backlog.sh list:*)", "Bash(.harness/backlog.sh show:*)", "Bash(.harness/backlog.sh approve:*)", "Bash(.harness/feature-list.sh stats)", "Agent"]
+argument-hint: "\"<feature request or epic>\" [--approve] | --from-ralph [--approve]"
+allowed-tools: ["Read(.claude/ralph-loop.last.md)", "Read(.claude/ralph-loop.local.md)", "Bash(.harness/backlog.sh list:*)", "Bash(.harness/backlog.sh show:*)", "Bash(.harness/backlog.sh approve:*)", "Bash(.harness/feature-list.sh stats)", "Agent"]
 ---
 
 # Add to the backlog
 
 User arguments: $ARGUMENTS
 
-Split the arguments into the **request** (free text) and the optional flag `--approve`. Never pass the request text to a shell command.
+Split the arguments into the **request** (free text) and the optional flags `--approve` and `--from-ralph`. Never pass the request text to a shell command.
+
+With `--from-ralph`, the request is the prompt of the in-session Ralph loop. Read `.claude/ralph-loop.local.md` (active loop) or else `.claude/ralph-loop.last.md` (last finished loop), and use the text after the second `---` line. If the last loop ended `blocked`, include its `detail` as context. This promotes a quick Ralph task into tracked, independently verified backlog features.
 
 1. If `.harness/backlog.sh` does not exist: if `.harness/feature_list.json` is also missing, tell the user this project has no harness yet and suggest `/wreck-it-ralph:init "<their request>"`; otherwise tell them to run `/wreck-it-ralph:setup --refresh`. Stop.
 2. Launch the **planner** as a fresh-context subagent with the Agent tool (`subagent_type: "wreck-it-ralph:planner"`). The prompt is the user's request verbatim. Wait for it. Do not plan or implement anything yourself.

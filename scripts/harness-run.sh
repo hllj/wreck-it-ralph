@@ -76,16 +76,44 @@ resolve_agent() {
   return 1
 }
 
+# Probe the CLI once: a per-call spend cap needs --max-budget-usd.
+SUPPORTS_BUDGET=0
+"$CLAUDE_BIN" --help </dev/null 2>/dev/null | grep -q -- '--max-budget-usd' && SUPPORTS_BUDGET=1
+
+record_usage() { # name jsonfile -> ledger line (tolerant: unknown/old output just records nothing)
+  local name="$1" json="$2" fields
+  fields="$(jq -r 'select(type == "object") | [(.total_cost_usd // .cost_usd // ""), (.usage.input_tokens // ""),
+      ((.usage.output_tokens // 0) + (.usage.cache_creation_input_tokens // 0) | tostring), (.duration_ms // ""), (.num_turns // "")] | @tsv' "$json" 2>/dev/null | head -n1)" || return 0
+  [[ -z "$fields" ]] && return 0
+  local cost itok otok ms turns; IFS=$'\t' read -r cost itok otok ms turns <<<"$fields"
+  local a=(ledger add "$name" --mode headless)
+  [[ -n "$cost" ]] && a+=(--cost "$cost"); [[ -n "$itok" ]] && a+=(--input-tokens "$itok")
+  [[ -n "$otok" ]] && a+=(--output-tokens "$otok"); [[ -n "$ms" ]] && a+=(--ms "$ms"); [[ -n "$turns" ]] && a+=(--turns "$turns")
+  "$STEP" "${a[@]}" >/dev/null 2>&1 || true
+}
+
 run_agent() { # name task logfile
-  local name="$1" task="$2" logfile="$3" def sys
+  local name="$1" task="$2" logfile="$3" def sys json="${3%.log}.json" rc=0
   def="$(resolve_agent "$name")" || { log "agent '$name' not found"; return 127; }
   sys="$(strip_frontmatter "$def")"
-  local args=(-p --append-system-prompt "$sys" --permission-mode "$PERM")
+  local args=(-p --append-system-prompt "$sys" --permission-mode "$PERM" --output-format json)
   [[ -n "$MODEL" ]]   && args+=(--model "$MODEL")
   [[ -n "$ALLOWED" ]] && args+=(--allowedTools "$ALLOWED")
   [[ -n "$MCP" && -f "$MCP" ]] && args+=(--mcp-config "$MCP")
+  if [[ $SUPPORTS_BUDGET -eq 1 ]]; then
+    local left; left="$(sed -n 's/^REMAINING_USD=//p' <<<"$("$STEP" budget)")"
+    [[ -n "$left" ]] && args+=(--max-budget-usd "$left")
+  fi
   # Task goes via stdin: variadic flags (--mcp-config) would swallow a positional prompt.
-  printf '%s' "$task" | "$CLAUDE_BIN" "${args[@]}" > "$logfile" 2>&1
+  printf '%s' "$task" | "$CLAUDE_BIN" "${args[@]}" > "$json" 2> "$logfile" || rc=$?
+  # Human-readable log: the agent's final text, then stderr. Raw JSON (cost, usage) stays next to it.
+  if jq -e 'type == "object" and has("result")' "$json" >/dev/null 2>&1; then
+    { jq -r '.result // ""' "$json"; echo; cat "$logfile"; } > "$logfile.tmp" && mv "$logfile.tmp" "$logfile"
+    record_usage "$name" "$json"
+  else
+    { cat "$json"; cat "$logfile"; } > "$logfile.tmp" && mv "$logfile.tmp" "$logfile"
+  fi
+  return $rc
 }
 
 NEWRUN=(--new-run --owner-pid "$$")
@@ -103,6 +131,7 @@ while true; do
   fi
   n="$(kv SESSION "$OUT")"; target="$(kv TARGET "$OUT")"
   log "── session $n | $(kv STATS "$OUT") | target: $target"
+  [[ -n "$(kv NOTE "$OUT")" ]] && log "   note: $(kv NOTE "$OUT")"
 
   session_failed=0
   while IFS=$'\t' read -r agent blocking every when; do
@@ -119,7 +148,8 @@ while true; do
   done < <("$STEP" plan)
 
   END="$("$STEP" end)"
-  log "── session $n done | $(kv STATS "$END") | commits: $(kv COMMITS "$END") | no-progress streak: $(kv STUCK "$END")"
+  SPEND="$("$STEP" ledger total)"
+  log "── session $n done | $(kv STATS "$END") | commits: $(kv COMMITS "$END") | diff: $(kv DIFF_LINES "$END") lines | no-progress streak: $(kv STUCK "$END") | spent: \$$(kv COST "$SPEND")"
   [[ $session_failed -eq 1 ]] && log "   (a blocking agent failed this session)"
   [[ -n "$(kv VERIFY_FAILED "$END")" ]] && log "   verify commands failed: $(kv VERIFY_FAILED "$END")"
   [[ -n "$(kv NEEDS_HUMAN "$END")" ]] && log "   escalated to a human: $(kv NEEDS_HUMAN "$END") (answer with /wreck-it-ralph:backlog answer <ID> \"...\")"

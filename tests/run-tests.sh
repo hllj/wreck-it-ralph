@@ -444,5 +444,87 @@ ralph_state 1; transcript "nope"
 check "max iterations ends the loop"           'hook_in s1 | bash "$HOOK" >/dev/null; [[ ! -f .claude/ralph-loop.local.md ]]'
 check "hook needs no perl"                     '! grep -q perl "$HOOK"'
 
+echo "phase 2: ledger and budgets"
+set_cfg() { jq "$1" .harness/config.json > .harness/c && mv .harness/c .harness/config.json; git add -A; git commit -qm cfg >/dev/null 2>&1 || true; }
+new_project 3
+S=.harness/step.sh
+$S begin --new-run >/dev/null
+$S ledger add coder --cost 0.5 --input-tokens 1000 --output-tokens 200 --ms 900 >/dev/null
+$S ledger add tester --tokens 300 >/dev/null
+OUT="$($S ledger total)"
+check "ledger totals cost and tokens for the run" 'grep -q "^COST=0.5$" <<<"$OUT" && grep -q "^TOKENS=1500$" <<<"$OUT" && grep -q "^RUNS=2$" <<<"$OUT"'
+check "ledger rejects non-numeric values"     '! $S ledger add coder --cost abc >/dev/null 2>&1'
+check "ledger is git-ignored"                 'grep -qxF ledger.jsonl .harness/.gitignore'
+check "no cost cap: empty REMAINING_USD"      'out_has "^REMAINING_USD=$" $S budget'
+$S end >/dev/null 2>&1
+set_cfg '.budget.max_cost_usd=2'
+check "remaining budget is reported"          'out_has "^REMAINING_USD=1.5$" $S budget'
+set_cfg '.budget.max_cost_usd=0.5'
+check "cost cap stops begin (code 10)"        'out_has "^CODE=10$" $S begin && out_has "budget.max_cost_usd" $S begin'
+check "new run resets the run budget"         '$S unlock >/dev/null; out_has "^DECISION=continue" $S begin --new-run'
+$S end >/dev/null 2>&1
+set_cfg '.budget.max_cost_usd=0 | .budget.max_tokens=100'
+$S ledger add coder --tokens 150 >/dev/null
+check "token cap stops begin (code 10)"       'out_has "^CODE=10$" $S begin'
+set_cfg '.budget.max_tokens=0 | .budget.max_wall_minutes=1'
+jq '.run = (.run - 120)' .harness/.step_state.json > .harness/st && mv .harness/st .harness/.step_state.json
+check "wall-clock cap stops begin (code 10)"  'out_has "^REASON=budget exhausted: 2 minutes" $S begin'
+check "summary shows spend"                   '$S summary x 0 >/dev/null 2>&1; grep -q "Spend this run" .harness/last-run.md'
+
+new_project 2
+S=.harness/step.sh
+set_cfg '.budget.max_diff_lines=5'
+$S begin --new-run >/dev/null; seq 1 20 > big.txt; git add -A; git commit -qm "feat: big" >/dev/null
+OUT="$($S end 2>/dev/null)"
+check "large session diff warns"              'grep -q "^DIFF_LINES=20$" <<<"$OUT" && grep -q "^WARN=session 1 changed 20 lines" <<<"$OUT" && grep -q "^NEXT=continue$" <<<"$OUT"'
+set_cfg '.budget.on_large_diff="stop"'
+$S begin >/dev/null; seq 1 20 > big2.txt; git add -A; git commit -qm "feat: big2" >/dev/null
+OUT="$($S end 2>/dev/null)"
+check "on_large_diff=stop stops (code 11)"    'grep -q "^NEXT=stop$" <<<"$OUT" && grep -q "^CODE=11$" <<<"$OUT"'
+$S begin >/dev/null; OUT="$($S end 2>/dev/null)"
+check ".harness changes do not count as diff" 'grep -q "^DIFF_LINES=0$" <<<"$OUT"'
+
+new_project 2
+FAKE_COST=0.25 .harness/run.sh >$LOGD/l1.log 2>&1
+check "headless run records each agent in the ledger" '[[ "$(wc -l < .harness/ledger.jsonl | tr -d " ")" == 4 ]] && jq -e "select(.mode==\"headless\" and .cost_usd==0.25 and .input_tokens==1000)" .harness/ledger.jsonl >/dev/null'
+check "headless log keeps readable agent output" 'grep -q "fake claude ok" .harness/sessions/001-coder.log && grep -q "noisy stderr" .harness/sessions/001-coder.log && [[ -f .harness/sessions/001-coder.json ]]'
+check "runner prints spend per session"       'grep -q "spent: \$0.5" $LOGD/l1.log'
+new_project 3
+set_cfg '.budget.max_cost_usd=0.6'
+FAKE_COST=0.25 FAKE_BUDGET_FLAG=1 FAKE_ARGS_LOG=$LOGD/args.log .harness/run.sh >$LOGD/l2.log 2>&1; RC=$?
+check "cost cap ends a headless run (code 10)" '[[ $RC -eq 10 ]] && grep -q "budget exhausted" $LOGD/l2.log'
+check "per-call cap passed as --max-budget-usd" 'grep -q -- "--max-budget-usd 0.6" $LOGD/args.log && grep -q -- "--max-budget-usd 0.35" $LOGD/args.log'
+new_project 1
+FAKE_ARGS_LOG=$LOGD/args2.log .harness/run.sh >/dev/null 2>&1
+check "no --max-budget-usd when the CLI lacks it" '! grep -q -- "--max-budget-usd" $LOGD/args2.log && grep -q -- "--output-format json" $LOGD/args2.log'
+
+echo "phase 2: ralph --verify / --allow-blocked / --max-minutes"
+RSETUP="$ROOT/scripts/setup-ralph-loop.sh"
+export CLAUDE_CODE_SESSION_ID=s1   # isolate from the session running the tests
+P="$(mktemp -d)"; cd "$P"
+"$RSETUP" "make it pass" --verify 'test -f ok.txt' --max-minutes 5 --completion-promise 'say "done"' >/dev/null
+check "setup stores JSON-quoted strings"      'grep -q "^completion_promise: \"say \\\\\"done\\\\\"\"$" .claude/ralph-loop.local.md && grep -q "^verify: \"test -f ok.txt\"$" .claude/ralph-loop.local.md && grep -q "^max_minutes: 5$" .claude/ralph-loop.local.md'
+check "setup rejects a bad --max-minutes"     '! "$RSETUP" x --max-minutes soon >/dev/null 2>&1'
+transcript 'done <promise>say "done"</promise>'
+OUT="$(hook_in s1 | bash "$HOOK")"
+check "promise with quotes still matches"     'jq -e ".decision==\"block\"" <<<"$OUT" >/dev/null'
+check "failing verify keeps looping with feedback" 'jq -e ".reason | test(\"verify command failed\") and test(\"test -f ok.txt\")" <<<"$OUT" >/dev/null && [[ -f .claude/ralph-loop.local.md ]]'
+touch ok.txt
+check "promise + passing verify ends the loop" 'hook_in s1 | bash "$HOOK" | grep -q "verify command passed"; [[ ! -f .claude/ralph-loop.local.md ]]'
+check "outcome is recorded"                   'grep -q "^outcome: done$" .claude/ralph-loop.last.md && grep -q "make it pass" .claude/ralph-loop.last.md'
+rm ok.txt; "$RSETUP" "no promise" --verify 'test -f ok.txt' >/dev/null; transcript "working"
+check "verify alone is checked at every stop" 'hook_in s1 | bash "$HOOK" | jq -e ".decision==\"block\"" >/dev/null && touch ok.txt && hook_in s1 | bash "$HOOK" >/dev/null && [[ ! -f .claude/ralph-loop.local.md ]]'
+"$RSETUP" "stuck task" --allow-blocked >/dev/null; transcript "<promise>BLOCKED: need an API key</promise>"
+check "BLOCKED ends the loop when allowed"    'hook_in s1 | bash "$HOOK" | grep -q "blocked"; [[ ! -f .claude/ralph-loop.local.md ]] && grep -q "^outcome: blocked$" .claude/ralph-loop.last.md && grep -q "need an API key" .claude/ralph-loop.last.md'
+"$RSETUP" "stuck task" >/dev/null
+check "BLOCKED is ignored unless allowed"     'hook_in s1 | bash "$HOOK" | jq -e ".decision==\"block\"" >/dev/null'
+"$RSETUP" "timed task" --max-minutes 1 >/dev/null
+sed -i.bak 's/^started_epoch: .*/started_epoch: 1/' .claude/ralph-loop.local.md; transcript "working"
+check "--max-minutes ends the loop"           'hook_in s1 | bash "$HOOK" | grep -q "time budget"; [[ ! -f .claude/ralph-loop.local.md ]] && grep -q "^outcome: max_minutes$" .claude/ralph-loop.last.md'
+printf -- '---\nactive: true\niteration: 1\nsession_id: \nmax_iterations: 0\ncompletion_promise: "OLD"\nstarted_at: "x"\n---\n\nlegacy prompt\n' > .claude/ralph-loop.local.md; transcript "<promise>OLD</promise>"
+check "legacy state files still work"         'hook_in s1 | bash "$HOOK" | grep -q "Detected"; [[ ! -f .claude/ralph-loop.local.md ]]'
+check "stop hook has a long timeout"          '[[ "$(jq ".hooks.Stop[0].hooks[0].timeout" "$ROOT/hooks/hooks.json")" -ge 300 ]]'
+
+unset CLAUDE_CODE_SESSION_ID
 echo; echo "passed: $PASS  failed: $FAIL"
 [[ $FAIL -eq 0 ]]

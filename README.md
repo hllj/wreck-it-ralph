@@ -116,6 +116,24 @@ begin gate ─▶ coder (fresh) ─▶ verify gate ─▶ tester (fresh) ─▶ 
 | 4 / 5 / 6 / 7 | Dirty tree / config not trusted / no git identity / another loop running |
 | 8 | Every remaining feature waits for a human answer |
 | 9 | The remaining features have dependencies that can never pass (for example a cycle) |
+| 10 | A run budget is used up: `budget.max_cost_usd`, `max_tokens` or `max_wall_minutes` |
+| 11 | A session changed more than `budget.max_diff_lines` lines and `on_large_diff` is `stop` (review, then run again) |
+
+### Budgets and the ledger
+
+Every agent run is recorded in `.harness/ledger.jsonl`, which is git-ignored.
+
+**What gets recorded:**
+- **Headless mode** reads cost, tokens, duration and turns from `claude -p --output-format json`.
+  - The raw JSON is kept as `NNN-<agent>.json` next to the readable `.log`.
+  - When the installed CLI supports `--max-budget-usd`, each call is also capped at the budget left for the run.
+- **Interactive mode** has the orchestrator record the token count and duration that the Agent tool reports. There is no dollar cost there, so use `max_tokens` and `max_wall_minutes` to cap interactive runs.
+
+**How the caps work:**
+- Budgets apply **per run**. Each `run --new-run` starts a fresh budget, so raising a cap or starting again continues the work.
+- `0` means unlimited.
+- The gates check the caps before every session and after it ends.
+- `/status`, the per-session log lines and `.harness/last-run.md` show what was spent. `.harness/step.sh ledger total` prints the totals.
 
 ## Configuration (`.harness/config.json`)
 
@@ -125,6 +143,7 @@ begin gate ─▶ coder (fresh) ─▶ verify gate ─▶ tester (fresh) ─▶ 
   "max_sessions": 100,
   "stuck_limit": 3,
   "escalate_after_failures": 3,
+  "budget": { "max_cost_usd": 25, "max_tokens": 0, "max_wall_minutes": 480, "max_diff_lines": 800, "on_large_diff": "warn" },
   "verify_static": "npm run lint && npx tsc --noEmit",
   "final_verify_command": "npm test",
   "permission_mode": "acceptEdits",
@@ -167,6 +186,7 @@ begin gate ─▶ coder (fresh) ─▶ verify gate ─▶ tester (fresh) ─▶ 
 - **Headless agent output:** `.harness/sessions/NNN-<agent>.log`.
 - **Verify gate output:** `NNN-verify-<ID>.log`.
 - **Interactive notes:** `NNN-notes.md`.
+- **Spend per agent run:** `.harness/ledger.jsonl`. The summary shows the run total.
 - **Session narrative:** `.harness/progress.md`.
 - **Run summary:** every stop writes `.harness/last-run.md`, with the stop reason, every feature with its status and note, open questions, pending proposals, commits and agent notes.
 
@@ -179,16 +199,24 @@ Run the script tests with `bash tests/run-tests.sh`. It uses a fake `claude`, an
 `/wreck-it-ralph:ralph "<prompt>" --max-iterations 20 --completion-promise "DONE"` starts a loop inside your current session:
 1. A Stop hook blocks Claude from ending its turn.
 2. It feeds the **same prompt** back, so Claude sees its own previous work in files and git.
-3. The loop ends when Claude outputs `<promise>DONE</promise>` (exact match), when `--max-iterations` is reached, or when you run `/wreck-it-ralph:cancel-ralph`.
+3. The loop ends when:
+   - the promise (if set) is given **and** the `--verify` command (if set) exits 0;
+   - `--max-iterations` or `--max-minutes` is reached;
+   - with `--allow-blocked`, Claude ends honestly with `<promise>BLOCKED: what I need</promise>`;
+   - you run `/wreck-it-ralph:cancel-ralph`.
+
+`--verify 'npm test'` is a real check: the hook runs it, and if it fails it feeds the output tail back to Claude with the prompt. So "I'm done" is not enough to end the loop.
+
+Every ending is recorded in `.claude/ralph-loop.last.md` (outcome, iterations, prompt). `/wreck-it-ralph:add --from-ralph` turns that task into backlog features once it outgrows a single loop.
 
 The loop is scoped to the session that started it.
 
-Use it for one well-defined task with an automatic check (for example "make the tests pass"). For anything spanning many features, use the harness: in Ralph mode the agent decides for itself when it is done, while the harness uses independent verifiers.
+Use it for one well-defined task with an automatic check (for example `--verify 'npm test'`). For anything spanning many features, use the harness, which adds fresh contexts, an independent tester and a tracked backlog.
 
 Prompt tips:
 - **Put the completion criteria in the prompt.**
 - **Work in phases or with TDD.**
-- **Always set `--max-iterations`.**
+- **Always set `--max-iterations` (or `--max-minutes`)**, and prefer `--verify` over a promise alone.
 - **Say what to do when stuck:** document blockers, list what was tried.
 
 Windows: the hook is a bash script and needs Git for Windows. If `bash` resolves to a broken WSL, point `hooks/hooks.json` at `"C:/Program Files/Git/bin/bash.exe"` in the cached plugin copy.

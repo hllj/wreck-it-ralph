@@ -1,10 +1,17 @@
 {
   "name": "wreck-it-ralph",
-  "version": "3.0.0",
-  "description": "Loop-engineered long-running agent harness: a living feature backlog you can grow at any time, fresh-context coder -> verifier -> tester sessions, gate-run verify commands, human escalation, plus the in-session Ralph loop.",
+  "version": "3.1.0",
+  "description": "Loop-engineered long-running agent harness: a living feature backlog you can grow at any time, fresh-context coder -> verify gate -> tester sessions, human escalation, run budgets (cost, tokens, time, diff size), plus an in-session Ralph loop with a real verify command.",
   "author": {
     "name": "wreck-it-ralph contributors"
   },
   "license": "Apache-2.0",
-  "keywords": ["ralph", "loop", "harness", "long-running", "agents", "loop-engineering"]
+  "keywords": [
+    "ralph",
+    "loop",
+    "harness",
+    "long-running",
+    "agents",
+    "loop-engineering"
+  ]
 }

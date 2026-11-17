@@ -1,12 +1,18 @@
 # wreck-it-ralph v3: analysis and improvement plan
 
-Status: **Phase 0 and Phase 1 are implemented in v3.0.0** (2026-11-17). Phases 2 to 5 are still proposals. The plan started from `wreck-it-ralph-loop` v2.1.0.
+Status: **Phases 0 and 1 are implemented in v3.0.0, and Phase 2 in v3.1.0** (2026-11-17). Phases 3 to 5 are still proposals. The plan started from `wreck-it-ralph-loop` v2.1.0.
 
 Implementation notes (where v3.0.0 differs from the plan below):
 - State stays in `.harness/` and the config stays `.harness/config.json` (now with `"version": 3`). There is no `.ralph/` directory and no `loop.json` yet. Moving the directory brought churn for existing users and no benefit, so it is deferred until the Phase 3 loop spec needs a new file.
 - Verification ladder: V1/V2 are implemented as config `verify_static` plus per-feature `verify` commands. They are run by the gate before the tester (or before acceptance when there is no tester). V3/V4 remain the tester. V5 (human) is the `needs_human` status.
 - `blocked` is not a stored status. A feature with unmet `depends_on` is simply not ready, and stop code 9 reports when nothing can ever become ready.
 - Retry context: each retry of a failed feature gets the last failure note and any human answer, and is told not to repeat the failed approach. That part of Phase 2's inner loop shipped early. `escalate_after_failures` (default 3) bounds the retries.
+- Phase 2, as built:
+  - The **inner loop** is the next session retrying the same ready feature in a fresh context, with the failure note and any human answer, bounded by `escalate_after_failures`. There is no extra retry loop inside a session: the orchestrator stays flat, and a session is already the unit of fresh context.
+  - **Budgets** live under `budget` in `config.json` (`max_cost_usd`, `max_tokens`, `max_wall_minutes`, `max_diff_lines`, `on_large_diff`). They apply per run and are checked at `begin` and `end`, giving stop codes 10 and 11.
+  - The **ledger** is `.harness/ledger.jsonl`. Headless mode parses `claude -p --output-format json` and passes `--max-budget-usd` when the CLI supports it. Interactive mode records the tokens and duration the Agent tool reports, so a dollar cap is exact only in headless mode.
+  - **Ralph mode** gained `--verify` (run by the hook; its failing output is fed back), `--max-minutes`, `--allow-blocked` (`<promise>BLOCKED: …</promise>`), JSON-quoted state values (which fixes promises containing quotes), an outcome record in `.claude/ralph-loop.last.md`, `/add --from-ralph`, and a 600 s hook timeout.
+  - Not built: an `on_terminal` hook (it belongs to Phase 3's extension points) and a shared state file between Ralph mode and the harness. They stay separate on purpose: Ralph mode is zero-setup.
 - Trust now has two parts: the config hash and the verify-command hash. Commands written by the initializer or approved in a proposal are trusted automatically, while repo-supplied ones need `/trust`.
 
 ## 1. The three source ideas

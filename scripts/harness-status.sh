@@ -10,6 +10,11 @@ NEXT="$("$FL" next || true)"
 echo "Next:      ${NEXT:-<none ready>}"
 [[ -f "$HARNESS_DIR/STOP" ]] && echo "STOP flag is set (the loop exits before its next session)"
 [[ -f "$HARNESS_DIR/runner.pid" ]] && kill -0 "$(cat "$HARNESS_DIR/runner.pid")" 2>/dev/null && echo "Runner:    running (pid $(cat "$HARNESS_DIR/runner.pid"))" || echo "Runner:    not running"
+if [[ -f "$HARNESS_DIR/.step_state.json" ]]; then
+  SPEND="$("$(dirname "$FL")/harness-step.sh" ledger total 2>/dev/null || true)"
+  kvs() { sed -n "s/^$1=//p" <<<"$SPEND"; }
+  if [[ -n "$SPEND" ]]; then echo "Spend:     \$$(kvs COST) | $(kvs TOKENS) tokens | $(kvs MINUTES) min this run"; fi
+fi
 Q="$("$FL" questions)"
 if [[ -n "$Q" ]]; then echo; echo "Waiting for a human (answer with /wreck-it-ralph:backlog answer <ID> \"...\"):"; printf '%s\n' "$Q" | sed 's/\t/: /; s/^/  /'; fi
 if [[ -f "$HARNESS_DIR/proposals.json" ]]; then

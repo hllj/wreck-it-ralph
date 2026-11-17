@@ -22,5 +22,12 @@
   "lock_timeout_minutes": 120,
   "version": 3,
   "verify_static": "",
-  "escalate_after_failures": 3
+  "escalate_after_failures": 3,
+  "budget": {
+    "max_cost_usd": 0,
+    "max_tokens": 0,
+    "max_wall_minutes": 0,
+    "max_diff_lines": 0,
+    "on_large_diff": "warn"
+  }
 }
