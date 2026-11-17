@@ -92,11 +92,25 @@ record_usage() { # name jsonfile -> ledger line (tolerant: unknown/old output ju
   "$STEP" "${a[@]}" >/dev/null 2>&1 || true
 }
 
+# Run one pipeline step. Returns 0 ok, 1+ failed, 75 skipped (optional extension not available).
 run_agent() { # name task logfile
-  local name="$1" task="$2" logfile="$3" def sys json="${3%.log}.json" rc=0
-  def="$(resolve_agent "$name")" || { log "agent '$name' not found"; return 127; }
-  sys="$(strip_frontmatter "$def")"
-  local args=(-p --append-system-prompt "$sys" --permission-mode "$PERM" --output-format json)
+  local name="$1" task="$2" logfile="$3" sys="" json="${3%.log}.json" rc=0 info type optional
+  info="$("$STEP" spawn-info "$name" 2>"$logfile")" || { log "   step '$name': $(cat "$logfile")"; return 127; }
+  type="$(sed -n 's/^TYPE=//p' <<<"$info" | head -n1)"; optional="$(sed -n 's/^OPTIONAL=//p' <<<"$info" | head -n1)"
+  case "$type" in
+    gate) "$STEP" run-step "$name" > "$logfile" 2>&1; return $? ;;
+    missing) echo "optional step '$name': agent not found" > "$logfile"; return 75 ;;
+    wreck-it-ralph:*)
+      local def; def="$(resolve_agent "${type#wreck-it-ralph:}")" || return 127
+      sys="$(strip_frontmatter "$def")" ;;
+    general-purpose) sys="$(sed '1,/^---PROMPT---$/d' <<<"$info")" ;;
+    *) # another plugin's agent: let a headless session delegate to it (the plugin must be installed for this user)
+      task="Use the Agent tool with subagent_type \"$type\" and give it the task below verbatim. Wait for it and report its result. If that agent type is not available, say exactly 'EXTENSION UNAVAILABLE: $type' and stop.
+
+$task" ;;
+  esac
+  local args=(-p --permission-mode "$PERM" --output-format json)
+  [[ -n "$sys" ]] && args+=(--append-system-prompt "$sys")
   [[ -n "$MODEL" ]]   && args+=(--model "$MODEL")
   [[ -n "$ALLOWED" ]] && args+=(--allowedTools "$ALLOWED")
   [[ -n "$MCP" && -f "$MCP" ]] && args+=(--mcp-config "$MCP")
@@ -113,6 +127,8 @@ run_agent() { # name task logfile
   else
     { cat "$json"; cat "$logfile"; } > "$logfile.tmp" && mv "$logfile.tmp" "$logfile"
   fi
+  if [[ "$optional" == true ]] && grep -q "EXTENSION UNAVAILABLE" "$logfile"; then return 75; fi
+  if [[ "$optional" == true && $rc -ne 0 ]]; then return 75; fi
   return $rc
 }
 
@@ -139,8 +155,12 @@ while true; do
     if [[ "$task" == SKIP:* ]]; then log "   skip $agent (${task#SKIP: })"; continue; fi
     logfile="$HARNESS_DIR/sessions/$(printf '%03d' "$n")-$agent.log"
     log "   ▶ $agent (fresh context) → $logfile"
-    if run_agent "$agent" "$task" "$logfile"; then
+    rc=0; run_agent "$agent" "$task" "$logfile" || rc=$?
+    if [[ $rc -eq 0 ]]; then
       log "   ✓ $agent finished"
+    elif [[ $rc -eq 75 ]]; then
+      log "   - $agent skipped (optional extension not available)"
+      "$STEP" note "$agent" skipped "optional extension not available" >/dev/null 2>&1 || true
     else
       log "   ✗ $agent exited with an error (see log)"
       if [[ "$blocking" == "true" ]]; then session_failed=1; break; fi

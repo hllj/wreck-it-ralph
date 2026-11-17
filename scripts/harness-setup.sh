@@ -56,7 +56,7 @@ case "$PRESET" in ""|web|cli|none) ;; *) echo "❌ --preset must be web, cli or 
 refresh_wrappers() {
   mkdir -p "$HARNESS_DIR"
   local pair name target
-  for pair in "feature-list.sh:feature-list.sh" "step.sh:harness-step.sh" "run.sh:harness-run.sh" "status.sh:harness-status.sh" "backlog.sh:backlog.sh"; do
+  for pair in "feature-list.sh:feature-list.sh" "step.sh:harness-step.sh" "run.sh:harness-run.sh" "status.sh:harness-status.sh" "backlog.sh:backlog.sh" "doctor.sh:harness-doctor.sh"; do
     name="${pair%%:*}"; target="${pair##*:}"
     cat > "$HARNESS_DIR/$name" <<WRAP
 #!/bin/bash
@@ -199,7 +199,7 @@ fi
 if [[ $FOR_INIT -eq 1 || $FORCE -eq 1 ]]; then find "$HARNESS_DIR/sessions" -type f -delete 2>/dev/null || true; fi
 
 refresh_wrappers
-CREATED+=("wrappers: feature-list.sh step.sh run.sh status.sh backlog.sh")
+CREATED+=("wrappers: feature-list.sh step.sh run.sh status.sh backlog.sh doctor.sh")
 
 if [[ ! -f "$HARNESS_DIR/README.md" ]]; then
   cat > "$HARNESS_DIR/README.md" <<'EOF'

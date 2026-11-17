@@ -28,6 +28,7 @@ PROPS="$HARNESS_DIR/proposals.json"
 FL="$PLUGIN_ROOT/scripts/feature-list.sh"
 # shellcheck source=harness-lib.sh
 source "$PLUGIN_ROOT/scripts/harness-lib.sh"
+hooks_allowed() { "$PLUGIN_ROOT/scripts/harness-step.sh" trust status >/dev/null 2>&1; }
 
 die() { echo "backlog: $*" >&2; exit 1; }
 command -v jq >/dev/null || die "jq is required"
@@ -112,6 +113,7 @@ do_approve() { # pid
   # The approver has seen the payload (incl. verify commands): extend trust to them if the config itself is trusted.
   "$PLUGIN_ROOT/scripts/harness-step.sh" trust accept-verify >/dev/null 2>&1 || true
   commit_backlog "backlog: approve $pid ($(jq -r --arg id "$pid" '.proposals[] | select(.id == $id) | .reason | .[0:60]' "$PROPS"))"
+  fire proposal_approved "proposal=$pid" "stats=$("$FL" stats)" >&2
   echo "approved $pid: $("$FL" stats)"
 }
 
@@ -122,6 +124,7 @@ do_propose() { # by reason payload -> prints pid
   dry_run "$payload" "$pid" >/dev/null
   props_write --arg id "$pid" --arg by "$by" --arg r "$reason" --arg t "$(now)" --argjson p "$payload" \
     '.proposals += [{id: $id, status: "pending", by: $by, reason: $r, at: $t, payload: $p}]'
+  fire proposal_filed "proposal=$pid" "by=$by" "reason=$reason" >&2
   echo "$pid"
 }
 

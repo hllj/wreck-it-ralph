@@ -23,6 +23,15 @@ Every agent runs in a **fresh context**, and all state lives on disk (`.harness/
 | `/wreck-it-ralph:run-headless [--max-sessions N] [--once]` | Unattended loop: separate `claude -p` processes in the background. |
 | `/wreck-it-ralph:status` | Features, next ready feature, open questions, pending proposals, runner state. |
 | `/wreck-it-ralph:cancel` | Stop after the current session. |
+| `/wreck-it-ralph:doctor` | Health check, including whether pipeline extensions (other plugins' agents, skills) and hooks resolve. |
+
+**Working with other plugins:**
+- **Pipeline steps:** a step can `use:` `agent:<plugin>:<agent>`, `skill:<name>`, `command:/<plugin>:<cmd>` or `cmd:<shell>`.
+- **Missing plugins:** with `optional: true`, a step whose plugin isn't installed is skipped with a note.
+- **When steps run:** `when` accepts `always`, `claimed`, `failing`, `passed` or `tag:<tag>`.
+- **Events:** every gate transition goes to `.harness/events.jsonl`, and `hooks` run shell handlers on those events.
+- **Status contract:** `.harness/status.sh --json` is a stable status snapshot.
+- **Loop design:** the `loop-design` skill helps design loops.
 
 **Key rules the gates enforce:**
 - One feature per session, taken from the ready queue (not passing, not waiting on a human, dependencies passing, by priority).

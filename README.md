@@ -30,7 +30,7 @@ Requirements:
 > Upgrading from `wreck-it-ralph-loop` 2.x:
 > - Commands are now shorter (`/wreck-it-ralph:run` instead of `/wreck-it-ralph-loop:harness-run`).
 > - Existing `.harness/` folders keep working unchanged.
-> - Run `/wreck-it-ralph:setup --refresh` once, then `/wreck-it-ralph:trust`, because the trust record now also covers verify commands.
+> - Run `/wreck-it-ralph:setup --refresh` once, then `/wreck-it-ralph:trust`, because the trust record now also covers verify commands, pipeline `use:` steps and hooks.
 
 ## Quick start
 
@@ -53,7 +53,8 @@ Requirements:
 | `trust` | Review the repo-supplied config (permissions, commands, MCP servers, custom agents, verify commands) and trust it. |
 | `run [--max-sessions N]` | Interactive loop. This session orchestrates fresh coder and tester subagents. |
 | `run-headless [--max-sessions N] [--once]` | Unattended loop with separate `claude -p` processes. |
-| `status` / `cancel` / `help` | Progress, questions and proposals / stop after the current session / explanation. |
+| `status` / `cancel` / `help` | Progress, questions and proposals / stop after the current session / explanation. `.harness/status.sh --json` is the machine-readable form. |
+| `doctor` | Health check: tools, git, config, feature list, trust, wrappers, and whether every pipeline extension (other plugins' agents, skills) and hook resolves. |
 | `ralph "<prompt>" [--max-iterations N] [--completion-promise T]` / `cancel-ralph` | The original in-session Ralph loop. |
 
 All commands are namespaced: `/wreck-it-ralph:<command>`.
@@ -75,6 +76,7 @@ begin gate ─▶ coder (fresh) ─▶ verify gate ─▶ tester (fresh) ─▶ 
 | **verify gate** (`step.sh verify`) | Runs `verify_static` (from config) and the feature's `verify` commands **in the gate, not in an agent**. If any of them fails, the feature fails and the tester is skipped. Logs go to `.harness/sessions/NNN-verify-<ID>.log`. |
 | **tester** (`agents/tester.md`) | An independent, skeptical verifier. Exercises the `steps` end to end (Playwright MCP for web), probes beyond them, checks the coder's known issues. It is the only role that marks a feature `passing`. |
 | **custom agents** | Any `.harness/agents/<name>.md`; templates are in `templates/agents/` (`reviewer`, `cleaner`). Add them to the pipeline with `every` / `when`. |
+| **extensions** | Pipeline steps that `use:` another plugin's agent, a skill, a slash command or a gate-run shell command. See "Working with other plugins". |
 | **gates** (`scripts/harness-step.sh`) | The deterministic rules both loop modes share: trust, lock, dirty-tree and identity checks, session cap, stuck detection, the ready queue, the verify gate, unverified-pass reset, the spec lock, escalation and the summary. |
 
 ### The living backlog
@@ -134,6 +136,83 @@ Every agent run is recorded in `.harness/ledger.jsonl`, which is git-ignored.
 - `0` means unlimited.
 - The gates check the caps before every session and after it ends.
 - `/status`, the per-session log lines and `.harness/last-run.md` show what was spent. `.harness/step.sh ledger total` prints the totals.
+
+## Working with other plugins
+
+The harness is a host: any installed plugin's agents, skills and commands can be steps in its pipeline, and any tool can follow its progress.
+
+### Pipeline extensions
+
+```json
+"pipeline": [
+  { "agent": "coder", "blocking": true },
+  { "agent": "tester", "blocking": true, "when": "claimed" },
+  { "name": "review",   "use": "agent:pr-review-toolkit:code-reviewer", "when": "passed", "optional": true },
+  { "name": "security", "use": "skill:security-review", "when": "tag:auth", "optional": true },
+  { "name": "changelog","use": "command:/docs:changelog", "every": 10, "optional": true },
+  { "name": "build",    "use": "cmd:npm run build" }
+]
+```
+
+| `use` | Runs as |
+|---|---|
+| `agent:<name>` | a harness agent (`.harness/agents/`, the plugin's `agents/`, `templates/agents/`) |
+| `agent:<plugin>:<agent>` | another plugin's subagent type. Headless runs delegate to it from a `claude -p` session |
+| `skill:<name>` · `skill:<plugin>:<skill>` · `command:/<plugin>:<cmd> args` | a fresh subagent that invokes it with the Skill tool |
+| `cmd:<shell>` | a shell step run by the gate itself; the exit code is the result |
+
+Step fields:
+- `use:` steps default to `blocking: false`.
+- `optional: true` skips the step with a note when the plugin is not installed, so a missing plugin never breaks a run.
+- `when` also accepts `passed` (a feature passed this session) and `tag:<tag>` (the target feature has that tag).
+
+Extension steps are told the session's commit range and which features passed. They may `fail` a feature they find broken, or `propose` follow-up features. They can never `pass` a feature or edit the spec. Run `/wreck-it-ralph:doctor` to see which references resolve on this machine.
+
+### Events and hooks
+
+Every gate transition is appended to `.harness/events.jsonl` (git-ignored), one JSON object per line:
+
+| Event | Extra fields |
+|---|---|
+| `run_started` | |
+| `session_started` | `target` |
+| `feature_claimed` | |
+| `verify_failed` | `command` |
+| `feature_passed` | `feature` |
+| `feature_failed` | `note` |
+| `needs_human` | `question` |
+| `session_ended` | `stats` |
+| `run_ended` | `reason`, `code` |
+| `step_finished` | |
+| `proposal_filed` | |
+| `proposal_approved` | |
+
+`hooks` in the config attach shell handlers to these events:
+
+```json
+"hooks": {
+  "needs_human": ["cmd:osascript -e \"display notification \\\"$HARNESS_QUESTION\\\" with title \\\"Harness\\\"\""],
+  "run_ended":   ["cmd:./scripts/notify.sh"]
+}
+```
+
+- Each handler gets the event JSON on stdin and `HARNESS_EVENT`, `HARNESS_FEATURE`, `HARNESS_REASON`, `HARNESS_CODE`, `HARNESS_QUESTION`, … in its environment.
+- Output goes to `.harness/sessions/hooks.log`.
+- A failing handler is reported but never stops the loop.
+- Hooks and `cmd:` steps are part of the trust record, so they don't run until you've reviewed them with `/wreck-it-ralph:trust`.
+
+### Status contract
+
+`.harness/status.sh --json` prints a versioned snapshot (`"schema": 1`) for status lines, dashboards and other plugins:
+- feature counts by status, and `next`
+- `questions` and `proposals_pending`
+- `runner` and `session` state
+- `spend`
+- `last_event`
+
+### Designing loops
+
+The bundled `loop-design` skill teaches Claude how to set up and tune a loop: verification levels, budgets, escalation, pipeline recipes, hooks, and a pre-flight checklist for unattended runs. Ask, for example, "help me harden this loop for an overnight run".
 
 ## Configuration (`.harness/config.json`)
 

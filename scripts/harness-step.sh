@@ -9,9 +9,11 @@
 #   begin [--new-run] [--max-sessions N] [--owner-pid PID]
 #         Decide whether to start another session. Prints KEY=VALUE lines:
 #         DECISION=continue|done|stop  SESSION=n  TARGET=<feature id>  STATS=...  REASON=...  CODE=<exit code>
-#   plan                         list pipeline steps: agent<TAB>blocking<TAB>every<TAB>when
-#   task <agent>                 print the task message for the agent, or "SKIP: <why>"
-#   spawn-info <agent>           TYPE=<subagent type>; for non-plugin agents the prompt follows "---PROMPT---"
+#   plan                         list pipeline steps: name<TAB>blocking<TAB>every<TAB>when
+#   task <name>                  print the task message for the step, or "SKIP: <why>"
+#   spawn-info <name>            TYPE=<subagent type> | general-purpose | gate, OPTIONAL=true|false;
+#                                for general-purpose the prompt follows "---PROMPT---"
+#   run-step <name>              run a `cmd:` pipeline step in the gate (exit code = result)
 #   end                          after the pipeline: spec-lock check, clean tree, stuck detection.
 #                                Prints PASSING, STATS, COMMITS, STUCK, NEXT=continue|stop, REASON, CODE
 #   summary <reason> <code>      print + save the run summary (.harness/last-run.md)
@@ -71,14 +73,21 @@ safe_commit() { # message; never swallows a failure
     COMMIT_FAILED=1; return 1
   fi
 }
-has_tester() { jq -e 'any(.pipeline[]?; .agent == "tester")' "$CFG" >/dev/null; }
+# Pipeline steps: {"agent": "coder"} (classic) or {"name": "review", "use": "agent:plugin:agent" | "agent:name" |
+# "skill:name" | "command:/plugin:cmd args" | "cmd:shell", "optional": true}. A step's name is its handle.
+STEPNAME='def stepname: .name // .agent // ((.use // "step") | sub("^[a-z]+:\\s*/?"; "") | gsub("[^A-Za-z0-9_-]+"; "-") | .[0:40]);'
+step_entry() { jq -c --arg a "$1" "$STEPNAME"' [.pipeline[]? | select(stepname == $a)] | .[0] // {}' "$CFG"; }
+is_extension() { case "$1" in agent:*:*|skill:*|command:*) return 0 ;; esac; return 1; } # another plugin's agent / a skill
+has_tester() { jq -e 'any(.pipeline[]?; .agent == "tester" or .use == "agent:tester")' "$CFG" >/dev/null; }
+hooks_allowed() { is_trusted; }
 
 
 # ---------- trust: repo-supplied config can execute code, so it must be reviewed once per machine ----------
 TRUST_FILE="$HARNESS_DIR/.trusted"
 mcp_path() { cfg '.mcp_config // ""'; }
 trust_material() { # everything that can run commands or steer agents with elevated rights
-  jq -S '{permission_mode, allowed_tools, final_verify_command, verify_static, claude_bin, model, mcp_config}' "$CFG"
+  jq -S '{permission_mode, allowed_tools, final_verify_command, verify_static, claude_bin, model, mcp_config,
+          uses: [.pipeline[]? | .use // empty], hooks: (.hooks // {})}' "$CFG"
   local m; m="$(mcp_path)"; if [[ -n "$m" && -f "$m" ]]; then echo "## mcp: $m"; cat "$m"; fi
   local f; for f in $(ls "$HARNESS_DIR"/agents/*.md 2>/dev/null | sort); do echo "## agent: $f"; cat "$f"; done
 }
@@ -104,6 +113,10 @@ cmd_trust() {
       echo "model:                $(cfg '.model // ""')"
       echo "final_verify_command: $(cfg '.final_verify_command // ""')"
       echo "verify_static:        $(cfg '.verify_static // ""')"
+      local u; u="$(jq -r '.pipeline[]? | select(.use) | "  \(.name // "-"): \(.use)\(if .optional then " (optional)" else "" end)"' "$CFG")"
+      if [[ -n "$u" ]]; then echo; echo "Pipeline extensions (other plugins' agents/skills, shell steps):"; echo "$u"; fi
+      local h; h="$(jq -r '(.hooks // {}) | to_entries[] | .key as $k | (.value | if type == "string" then [.] else . end)[] | "  \($k): \(.)"' "$CFG")"
+      if [[ -n "$h" ]]; then echo; echo "Hooks (run on harness events):"; echo "$h"; fi
       local v; v="$("$FL" verify-cmds 2>/dev/null || true)"
       if [[ -n "$v" ]]; then echo; echo "Feature verify commands (feature_list.json):"; printf '%s\n' "$v" | sort -u | sed 's/^/  $ /'; fi
       local m; m="$(mcp_path)"
@@ -260,6 +273,7 @@ cmd_begin() {
       --argjson s0 "$(cat "$SESSION_FILE" 2>/dev/null || echo 0)" \
       '{run:$run, start_head:$head, ran:0, stuck:0, extra_task:"", max:$max, session:0, session_start:$s0, in_session:false}' > "$STATE"
     ensure_all_ignores "$HARNESS_DIR" >&2 || true
+    fire run_started "stats=$("$FL" stats)" >&2
   fi
 
   lock_touch
@@ -309,10 +323,12 @@ cmd_begin() {
   if [[ -f "$LIST_LOCK" ]]; then cp "$LIST_LOCK" "$SNAP_LOCK"; else rm -f "$SNAP_LOCK"; fi
   if [[ -f "$PROPS" ]]; then cp "$PROPS" "$SNAP_PROPS"; else rm -f "$SNAP_PROPS"; fi
   st_set in_session true
+  st_set_s session_started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  fire session_started "session=$n" "target=${target:-none}" "stats=$("$FL" stats)" >&2
   emit DECISION continue; emit SESSION "$n"; emit TARGET "${target:-none}"; emit STATS "$("$FL" stats)"
 }
 
-cmd_plan() { jq -r '.pipeline[] | [.agent, (.blocking // true), (.every // 1), (.when // "always")] | @tsv' "$CFG"; }
+cmd_plan() { jq -r "$STEPNAME"' .pipeline[] | [stepname, (if has("blocking") then .blocking else (has("use") | not) end), (.every // 1), (.when // "always")] | @tsv' "$CFG"; }
 
 # Gate-owned verification: commands the agents cannot fake. Runs once per session, before the
 # tester (or any step with when=claimed), and at `end` when no such step ran.
@@ -323,6 +339,7 @@ cmd_verify() {
   local static id cmd failed ran log failed_ids=""
   static="$(cfg '.verify_static // ""')"
   for id in $(claimed_ids); do
+    fire feature_claimed "feature=$id" "session=${n:-0}" >&2
     failed=""; ran=0; log="$HARNESS_DIR/sessions/$(printf '%03d' "${n:-0}")-verify-$id.log"
     while IFS= read -r cmd; do
       [[ -z "$cmd" ]] && continue
@@ -332,6 +349,7 @@ cmd_verify() {
     if [[ -n "$failed" ]]; then
       "$FL" fail "$id" "verify command failed: $failed | $(tail -n 5 "$log" | tr '\n' ' ' | cut -c1-240) (log: $log)" >/dev/null
       echo "harness: verify failed for $id: $failed" >&2
+      fire verify_failed "feature=$id" "command=$failed" "session=${n:-0}" >&2
       failed_ids="$failed_ids $id"
     elif [[ $ran -eq 1 ]]; then
       echo "harness: verify commands passed for $id" >&2
@@ -351,21 +369,36 @@ feature_context() { # id -> extra task text for a retry: last failure, human ans
 }
 
 cmd_task() {
-  local agent="${1:?agent name required}" entry n every when target extra
-  entry="$(jq -c --arg a "$agent" 'first(.pipeline[]? | select(.agent == $a)) // {}' "$CFG")"
+  local agent="${1:?step name required}" entry n every when target extra
+  entry="$(step_entry "$agent")"
   every="$(jq -r '.every // 1' <<<"$entry")"; when="$(jq -r '.when // "always"' <<<"$entry")"
   n="$(st_get session)"; target="$(st_get target)"; extra="$(st_get extra_task)"
   if (( n % every != 0 )); then echo "SKIP: runs every $every sessions"; return 0; fi
   if [[ "$when" == "claimed" || "$agent" == "tester" ]]; then cmd_verify >/dev/null; fi
   if [[ "$when" == "claimed" && -z "$(claimed_ids)" ]]; then echo "SKIP: nothing claimed$( [[ -n "$(st_get verify_failed)" ]] && echo " (verify commands failed: $(st_get verify_failed))")"; return 0; fi
   if [[ "$when" == "failing" && -z "$("$FL" next)" ]]; then echo "SKIP: nothing failing"; return 0; fi
+  if [[ "$when" == "passed" && -z "$(newly_passing)" ]]; then echo "SKIP: nothing passed this session"; return 0; fi
+  if [[ "$when" == tag:* ]]; then
+    local tag="${when#tag:}"
+    if ! jq -e --arg id "$target" --arg t "$tag" '.features[] | select(.id == $id) | (.tags // []) | index($t)' "$HARNESS_DIR/feature_list.json" >/dev/null 2>&1; then
+      echo "SKIP: target ${target:-none} is not tagged $tag"; return 0
+    fi
+  fi
   if [[ "$agent" == "tester" ]]; then st_set verified_ids "$("$FL" claimed | jq -R -s -c 'split("\n")|map(select(length>0))')"; fi
   local task="Harness session $n. Progress: $("$FL" stats). Target feature: ${target:-none}. Features awaiting verification: $(claimed_ids)."
   local ctx; ctx="$(feature_context "$target")"
   [[ -n "$ctx" && "$agent" != "tester" ]] && task="$task $ctx"
   [[ -n "$extra" ]] && task="$task $extra"
+  if is_extension "$(jq -r '.use // ""' <<<"$entry")"; then
+    local np; np="$(newly_passing | tr '\n' ' ' | sed 's/ *$//')"
+    task="$task Commits this session: $(st_get head_before)..HEAD. Features passed this session: ${np:-none}.
+You are an extension step '$agent' in a long-running agent harness (state in .harness/, see .harness/progress.md). Do your job on the work of this session.
+Rules: never edit .harness/feature_list.json and never run feature-list.sh pass/claim. If you find that a feature passed this session is actually broken, run: .harness/feature-list.sh fail <ID> \"<precise reason>\". To suggest follow-up work, file a proposal: .harness/backlog.sh propose --by $agent --reason \"...\" --file <payload.json> (payload: {\"add\":[{\"description\":...,\"steps\":[...]}]}). Append a short '$agent' entry with your findings to .harness/progress.md, commit any change you make, and leave git status clean. Finish with a 2-3 line summary."
+  fi
   echo "$task"
 }
+
+newly_passing() { jq -r -n --argjson before "$(st_get_json pass_ids_before)" --argjson now "$(ids_json passing)" '$now - $before | .[]'; }
 
 resolve_agent() {
   local p
@@ -376,15 +409,44 @@ resolve_agent() {
 }
 
 cmd_spawn_info() {
-  local name="${1:?agent name required}" def
-  def="$(resolve_agent "$name")" || die "agent '$name' not found (looked in $HARNESS_DIR/agents, plugin agents/, templates/agents/)"
-  if [[ "$def" == "$PLUGIN_ROOT/agents/$name.md" ]]; then
-    echo "TYPE=wreck-it-ralph:$name"
-  else
-    echo "TYPE=general-purpose"
-    echo "---PROMPT---"
-    awk '/^---$/{i++; next} i>=2' "$def"
-  fi
+  local name="${1:?step name required}" def entry use optional ref
+  entry="$(step_entry "$name")"
+  use="$(jq -r '.use // ""' <<<"$entry")"; optional="$(jq -r '.optional // false' <<<"$entry")"
+  [[ -z "$use" ]] && use="agent:$name"
+  case "$use" in
+    agent:*:*) # another plugin's agent, e.g. agent:pr-review-toolkit:code-reviewer
+      echo "TYPE=${use#agent:}"; echo "OPTIONAL=$optional" ;;
+    agent:*)
+      ref="${use#agent:}"
+      def="$(resolve_agent "$ref")" || {
+        [[ "$optional" == true ]] && { echo "TYPE=missing"; echo "OPTIONAL=true"; return 0; }
+        die "agent '$ref' not found (looked in $HARNESS_DIR/agents, plugin agents/, templates/agents/)"; }
+      if [[ "$def" == "$PLUGIN_ROOT/agents/$ref.md" ]]; then
+        echo "TYPE=wreck-it-ralph:$ref"; echo "OPTIONAL=$optional"
+      else
+        echo "TYPE=general-purpose"; echo "OPTIONAL=$optional"; echo "---PROMPT---"
+        awk '/^---$/{i++; next} i>=2' "$def"
+      fi ;;
+    skill:*|command:*) # a skill or slash command, run by a fresh general-purpose subagent
+      ref="${use#*:}"; ref="${ref# }"
+      echo "TYPE=general-purpose"; echo "OPTIONAL=$optional"; echo "---PROMPT---"
+      echo "Use the Skill tool to invoke \`${ref}\` (a skill or slash command provided by another plugin or the user's setup), and follow its instructions, applied to the harness work described below. If that skill or command is not available in this session, say exactly 'EXTENSION UNAVAILABLE: ${ref}' and stop without doing anything else." ;;
+    cmd:*) echo "TYPE=gate"; echo "OPTIONAL=$optional" ;;
+    *) die "step '$name': unknown use '$use' (expected agent:, skill:, command: or cmd:)" ;;
+  esac
+}
+
+cmd_run_step() { # run a cmd: step in the gate (trusted config only)
+  local name="${1:?step name required}" entry use n log rc=0
+  entry="$(step_entry "$name")"; use="$(jq -r '.use // ""' <<<"$entry")"
+  [[ "$use" == cmd:* ]] || die "step '$name' is not a cmd: step"
+  is_trusted || die "config is not trusted; review it with /wreck-it-ralph:trust"
+  n="$(st_get session)"; log="$HARNESS_DIR/sessions/$(printf '%03d' "${n:-0}")-$name.log"
+  bash -c "${use#cmd:}" > "$log" 2>&1 < /dev/null || rc=$?
+  if [[ $rc -eq 0 ]]; then cmd_note "$name" ok "cmd passed" >/dev/null; echo "OK"
+  else cmd_note "$name" failed "cmd exited $rc: $(tail -n 3 "$log" | tr '\n' ' ' | cut -c1-200)" >/dev/null; echo "FAILED exit $rc (log: $log)"; fi
+  fire step_finished "step=$name" "result=$([[ $rc -eq 0 ]] && echo ok || echo failed)" "session=${n:-0}"
+  return $rc
 }
 
 # Undo backlog approvals made while the session ran (only humans approve, and only between sessions).
@@ -439,6 +501,14 @@ cmd_end() {
       fi
     done
   fi
+  local since fid2; since="$(st_get session_started_at)"
+  for fid2 in $(newly_passing); do fire feature_passed "feature=$fid2" "session=$n" >&2; done
+  for fid2 in $(jq -r --arg since "${since:-0}" '.features[] | select((.status // "") != "passing" and any((.attempts // [])[]; .event == "fail" and (.at // "") >= $since)) | .id' "$HARNESS_DIR/feature_list.json"); do
+    fire feature_failed "feature=$fid2" "session=$n" "note=$(jq -r --arg id "$fid2" '.features[] | select(.id == $id) | .notes // "" | .[0:300]' "$HARNESS_DIR/feature_list.json")" >&2
+  done
+  for fid2 in $(jq -r --arg since "${since:-0}" '.features[] | select(.status == "needs_human" and ((.attempts // [])[-1] | (.at // "") >= $since)) | .id' "$HARNESS_DIR/feature_list.json"); do
+    fire needs_human "feature=$fid2" "session=$n" "question=$(jq -r --arg id "$fid2" '.features[] | select(.id == $id) | .question // "" | .[0:300]' "$HARNESS_DIR/feature_list.json")" >&2
+  done
   check_spec_lock
   ensure_clean_state "$n"
   lock_touch
@@ -456,6 +526,7 @@ cmd_end() {
     large=1; emit WARN "session $n changed $lines lines (budget.max_diff_lines $maxd); review the commits"
   fi
   [[ -n "$unauth" ]] && emit UNVERIFIED_RESET "${unauth# }"
+  fire session_ended "session=$n" "stats=$("$FL" stats)" "stuck=$stuck/$limit" >&2
   [[ -n "$(st_get verify_failed)" ]] && emit VERIFY_FAILED "$(st_get verify_failed)"
   [[ -n "$escalated" ]] && emit NEEDS_HUMAN "${escalated# }"
   [[ $REVERTED -eq 1 ]] && emit WARN "a backlog approval made during the session was undone; approve between sessions"
@@ -521,6 +592,7 @@ cmd_summary() {
       echo "Session $((10#$num)):"; cat "$nf"
     done
   } > "$out"
+  fire run_ended "reason=$reason" "code=$code" "stats=$("$FL" stats)" >&2
   rm -f "$LOCK"
   echo
   sed 's/^#\+ //' "$out"
@@ -536,11 +608,12 @@ case "$cmd" in
   spawn-info)  cmd_spawn_info "$@" ;;
   end)         cmd_end ;;
   verify)      cmd_verify ;;
+  run-step)    cmd_run_step "$@" ;;
   summary)     cmd_summary "$@" ;;
   trust)       cmd_trust "$@" ;;
   note)        cmd_note "$@" ;;
   ledger)      cmd_ledger "$@" ;;
   budget)      cmd_budget ;;
   unlock)      cmd_unlock ;;
-  *) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
+  *) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
 esac

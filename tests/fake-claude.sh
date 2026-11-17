@@ -26,6 +26,10 @@ if [[ "$SYS" == *"CODER agent"* ]]; then
   [[ "${FAKE_MODE:-}" == "dirty" ]] && echo junk > leftover.txt
 elif [[ "$SYS" == *"TESTER agent"* ]]; then
   for id in $($FL claimed); do $FL pass "$id" >/dev/null; done
+elif [[ "$SYS" == *"Use the Skill tool"* || "$TASK" == *"Use the Agent tool with subagent_type"* ]]; then
+  if [[ -n "${FAKE_UNAVAILABLE:-}" ]]; then echo "EXTENSION UNAVAILABLE: x"; exit 0; fi
+  echo "fake extension ran"
+  [[ -n "${FAKE_EXT_FAIL:-}" ]] && for id in $(jq -r '.features[] | select(.status == "passing") | .id' .harness/feature_list.json | head -n1); do $FL fail "$id" "reviewer found a bug" >/dev/null; done
 fi
 echo "fake claude ok"
 echo "warning: noisy stderr" >&2

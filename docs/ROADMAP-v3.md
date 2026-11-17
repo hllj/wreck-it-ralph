@@ -1,6 +1,6 @@
 # wreck-it-ralph v3: analysis and improvement plan
 
-Status: **Phases 0 and 1 are implemented in v3.0.0, and Phase 2 in v3.1.0** (2026-11-17). Phases 3 to 5 are still proposals. The plan started from `wreck-it-ralph-loop` v2.1.0.
+Status: **Phases 0 and 1 are implemented in v3.0.0, Phase 2 in v3.1.0 and Phase 3 in v3.2.0** (2026-11-17). Phases 4 and 5 are still proposals. The plan started from `wreck-it-ralph-loop` v2.1.0.
 
 Implementation notes (where v3.0.0 differs from the plan below):
 - State stays in `.harness/` and the config stays `.harness/config.json` (now with `"version": 3`). There is no `.ralph/` directory and no `loop.json` yet. Moving the directory brought churn for existing users and no benefit, so it is deferred until the Phase 3 loop spec needs a new file.
@@ -13,6 +13,13 @@ Implementation notes (where v3.0.0 differs from the plan below):
   - The **ledger** is `.harness/ledger.jsonl`. Headless mode parses `claude -p --output-format json` and passes `--max-budget-usd` when the CLI supports it. Interactive mode records the tokens and duration the Agent tool reports, so a dollar cap is exact only in headless mode.
   - **Ralph mode** gained `--verify` (run by the hook; its failing output is fed back), `--max-minutes`, `--allow-blocked` (`<promise>BLOCKED: …</promise>`), JSON-quoted state values (which fixes promises containing quotes), an outcome record in `.claude/ralph-loop.last.md`, `/add --from-ralph`, and a 600 s hook timeout.
   - Not built: an `on_terminal` hook (it belongs to Phase 3's extension points) and a shared state file between Ralph mode and the harness. They stay separate on purpose: Ralph mode is zero-setup.
+- Phase 3, as built:
+  - **`use:` steps** in the existing `pipeline`: `agent:<name>`, `agent:<plugin>:<agent>`, `skill:`, `command:`, `cmd:`. They default to non-blocking, accept `optional` and `name`, and gain the new `when` values `passed` and `tag:<x>`.
+  - **How steps run.** Interactive: a plugin agent runs as that `subagent_type`, and skills or commands run as a general-purpose subagent told to use the Skill tool. Headless: a `claude -p` session delegates to the plugin agent, or invokes the skill. `cmd:` steps run in the gate (`step.sh run-step`).
+  - **Extension point names.** The roadmap's names (`pre_run`, `pre_unit`, `post_claim`, `post_pass`, `on_fail`, `on_terminal`) became event names: `run_started`, `session_started`, `feature_claimed`, `feature_passed`, `feature_failed`, `run_ended`, plus `verify_failed`, `needs_human`, `session_ended`, `step_finished`, `proposal_filed` and `proposal_approved`. Every event goes to `.harness/events.jsonl`.
+  - **Hooks run only `cmd:` handlers**, gated by trust, and never block the loop. Agent-based reactions belong in the pipeline with a `when` condition, which keeps a single place where agents are spawned.
+  - **Also shipped:** `status.sh --json` (schema 1), `/doctor` (resolves plugin agents, skills and commands in `~/.claude/plugins/cache`, and treats skills not found on disk as warnings because they may be built in), and the `skills/loop-design` skill.
+  - **Upgrade note:** the trust record now covers pipeline `use:` values and hooks, so re-run `/trust` after upgrading.
 - Trust now has two parts: the config hash and the verify-command hash. Commands written by the initializer or approved in a proposal are trusted automatically, while repo-supplied ones need `/trust`.
 
 ## 1. The three source ideas

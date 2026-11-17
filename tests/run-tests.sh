@@ -526,5 +526,101 @@ check "legacy state files still work"         'hook_in s1 | bash "$HOOK" | grep 
 check "stop hook has a long timeout"          '[[ "$(jq ".hooks.Stop[0].hooks[0].timeout" "$ROOT/hooks/hooks.json")" -ge 300 ]]'
 
 unset CLAUDE_CODE_SESSION_ID
+echo "phase 3: pipeline extensions (use:)"
+set_trusted_cfg() { jq "$1" .harness/config.json > .harness/c && mv .harness/c .harness/config.json; .harness/step.sh trust accept >/dev/null; git add -A; git commit -qm cfg >/dev/null 2>&1 || true; }
+EXT_PIPE='.pipeline = [{agent:"coder"}, {agent:"tester", when:"claimed"},
+  {name:"review", use:"agent:pr-review-toolkit:code-reviewer", when:"passed", optional:true},
+  {name:"security", use:"skill:security-review", when:"tag:auth"},
+  {name:"cmdstep", use:"cmd:echo built > built.txt"},
+  {name:"ghost", use:"agent:nope", optional:true}]'
+new_project 2
+S=.harness/step.sh; FL=.harness/feature-list.sh
+set_trusted_cfg "$EXT_PIPE"
+check "plan names use: steps, non-blocking by default" '[[ "$($S plan | cut -f1,2 | tr "\t\n" ": ")" == "coder:true tester:true review:false security:false cmdstep:false ghost:false " ]]'
+check "spawn-info: other plugin agent type"   'out_has "^TYPE=pr-review-toolkit:code-reviewer$" $S spawn-info review && out_has "^OPTIONAL=true$" $S spawn-info review'
+check "spawn-info: skill runs via the Skill tool" 'out_has "^TYPE=general-purpose$" $S spawn-info security && out_has "Skill tool to invoke .security-review" $S spawn-info security'
+check "spawn-info: cmd step runs in the gate" 'out_has "^TYPE=gate$" $S spawn-info cmdstep'
+check "spawn-info: missing optional agent"    'out_has "^TYPE=missing$" $S spawn-info ghost'
+check "spawn-info: unknown use is an error"   'jq ".pipeline += [{name:\"bad\", use:\"http://x\"}]" .harness/config.json > $LOGD/c.json; ! HARNESS_DIR=.harness bash -c "cp $LOGD/c.json .harness/config.json; $S spawn-info bad" >/dev/null 2>&1; git checkout -q .harness/config.json'
+$S trust accept >/dev/null
+$S begin --new-run >/dev/null
+check "when=passed skips when nothing passed" 'out_has "^SKIP: nothing passed this session" $S task review'
+check "when=tag skips untagged targets"       'out_has "^SKIP: target F001 is not tagged auth" $S task security'
+$FL claim F001 >/dev/null; $S task tester >/dev/null; $FL pass F001 >/dev/null
+check "when=passed runs after a pass"         'out_has "Features passed this session: F001" $S task review'
+check "extension task carries the rules"      'out_has "never run feature-list.sh pass" $S task review && out_has "backlog.sh propose --by review" $S task review'
+check "classic agents get no extension rules" '! out_has "extension step" $S task coder'
+check "run-step runs the shell step"          '$S run-step cmdstep >/dev/null && [[ "$(cat built.txt)" == built ]] && grep -q "cmdstep ok" .harness/sessions/001-notes.md'
+check "failing run-step reports and exits non-zero" 'jq ".pipeline[4].use=\"cmd:exit 3\"" .harness/config.json > .harness/c && mv .harness/c .harness/config.json && $S trust accept >/dev/null; ! $S run-step cmdstep >$LOGD/rs.log 2>&1 && grep -q "FAILED exit 3" $LOGD/rs.log'
+rm -f built.txt; git checkout -q .harness/config.json; $S trust accept >/dev/null; $S end >/dev/null 2>&1
+check "adding a use: step revokes trust"      'jq ".pipeline += [{name:\"x\", use:\"skill:anything\"}]" .harness/config.json > .harness/c && mv .harness/c .harness/config.json; ! $S trust status >/dev/null 2>&1 && out_has "x: skill:anything" $S trust show'
+check "run-step refuses untrusted config"     '! $S run-step cmdstep >/dev/null 2>&1'
+git checkout -q .harness/config.json; $S trust accept >/dev/null
+
+new_project 2
+set_trusted_cfg '.pipeline = [{agent:"coder"}, {agent:"tester", when:"claimed"}, {name:"review", use:"agent:pr-review-toolkit:code-reviewer", when:"passed", optional:true}, {name:"lint", use:"skill:lint-check", optional:true}, {name:"build", use:"cmd:echo ok"}]'
+.harness/run.sh --once >$LOGD/e1.log 2>&1
+check "headless: plugin agent step delegates via the Agent tool" 'grep -q "▶ review" $LOGD/e1.log && grep -q "fake extension ran" .harness/sessions/001-review.log'
+check "headless: skill step runs"             'grep -q "fake extension ran" .harness/sessions/001-lint.log'
+check "headless: cmd step runs in the gate"   'grep -q "^OK" .harness/sessions/001-build.log'
+new_project 2
+set_trusted_cfg '.pipeline = [{agent:"coder"}, {agent:"tester", when:"claimed"}, {name:"review", use:"agent:pr-review-toolkit:code-reviewer", optional:true}]'
+FAKE_UNAVAILABLE=1 .harness/run.sh --once >$LOGD/e2.log 2>&1
+check "headless: unavailable optional extension is skipped" 'grep -q "review skipped (optional extension not available)" $LOGD/e2.log && .harness/feature-list.sh list | grep -q "F001	PASS"'
+new_project 2
+set_trusted_cfg '.pipeline = [{agent:"coder"}, {agent:"tester", when:"claimed"}, {name:"review", use:"agent:pr-review-toolkit:code-reviewer", when:"passed"}]'
+FAKE_EXT_FAIL=1 .harness/run.sh --once >$LOGD/e3.log 2>&1
+check "an extension can fail a feature it finds broken" '[[ "$(.harness/feature-list.sh list | awk -F"\t" "\$1==\"F001\"{print \$2}")" == FAIL ]] && jq -r ".features[0].notes" .harness/feature_list.json | grep -q "reviewer found a bug"'
+
+echo "phase 3: events and hooks"
+new_project 2
+.harness/run.sh >$LOGD/ev.log 2>&1
+EV=.harness/events.jsonl
+check "events stream records the run"         'for e in run_started session_started feature_claimed feature_passed session_ended run_ended; do jq -e --arg e $e "select(.event==\$e)" $EV >/dev/null || exit 1; done'
+check "events carry details"                  'jq -e "select(.event==\"feature_passed\" and .feature==\"F002\")" $EV >/dev/null && jq -e "select(.event==\"run_ended\" and .code==\"0\")" $EV >/dev/null'
+check "events stream is git-ignored"          'grep -qxF events.jsonl .harness/.gitignore && [[ -z "$(git status --porcelain)" ]]'
+new_project 2
+S=.harness/step.sh; FL=.harness/feature-list.sh
+set_trusted_cfg '.escalate_after_failures=1 | .hooks = {feature_failed: ["cmd:cat > hook-in.json; echo \"$HARNESS_EVENT $HARNESS_FEATURE\" > hook-env.txt"], needs_human: "cmd:echo \"$HARNESS_QUESTION\" > q.txt", session_ended: ["cmd:exit 1"]}'
+echo hook-in.json >> .gitignore; echo hook-env.txt >> .gitignore; echo q.txt >> .gitignore; git add -A; git commit -qm ign
+$S begin --new-run >/dev/null 2>&1; $FL fail F001 "nope" >/dev/null; OUT="$($S end 2>$LOGD/h.err)"
+check "hook gets the event on stdin and env"  '[[ "$(cat hook-env.txt)" == "feature_failed F001" ]] && jq -e ".event==\"feature_failed\" and .note==\"nope\"" hook-in.json >/dev/null'
+check "string hook form works (needs_human)"  'grep -q "failed 1 attempts" q.txt'
+check "a failing hook never stops the loop"   'grep -q "^NEXT=continue$" <<<"$OUT" && grep -q "hook for .session_ended. failed" $LOGD/h.err'
+check "hook output is logged"                 'grep -q "feature_failed" .harness/sessions/hooks.log'
+rm -f hook-env.txt; jq '.hooks.feature_failed=["cmd:touch evil.txt"]' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+check "adding a hook revokes trust"           '! $S trust status >/dev/null 2>&1 && out_has "feature_failed: cmd:touch evil.txt" $S trust show'
+$S begin >/dev/null 2>&1; $FL fail F002 "x" >/dev/null; $S end >/dev/null 2>$LOGD/h2.err
+check "hooks do not run on untrusted config"  '[[ ! -f evil.txt ]] && grep -q "skipped (config not trusted)" $LOGD/h2.err'
+git checkout -q .harness/config.json 2>/dev/null; $S trust accept >/dev/null
+echo '{"add":[{"description":"more","steps":["x"]}]}' | .harness/backlog.sh propose --by planner --reason "more stuff" >/dev/null 2>&1; .harness/backlog.sh approve P001 >/dev/null 2>&1
+check "backlog emits proposal events"         'jq -e "select(.event==\"proposal_filed\" and .by==\"planner\")" .harness/events.jsonl >/dev/null && jq -e "select(.event==\"proposal_approved\" and .proposal==\"P001\")" .harness/events.jsonl >/dev/null'
+
+echo "phase 3: status --json and doctor"
+new_project 3
+S=.harness/step.sh; FL=.harness/feature-list.sh
+$FL ask F003 "which db?" >/dev/null
+echo '{"add":[{"description":"y","steps":["z"]}]}' | .harness/backlog.sh propose --reason "why" >/dev/null 2>&1
+$S begin --new-run >/dev/null 2>&1; $S ledger add coder --cost 0.4 >/dev/null
+J="$(.harness/status.sh --json)"
+check "status --json is valid and versioned"  'jq -e ".schema == 1 and .initialized" <<<"$J" >/dev/null'
+check "status --json counts features"         'jq -e ".features.total == 3 and .features.todo == 2 and .features.needs_human == 1" <<<"$J" >/dev/null'
+check "status --json lists work and state"    'jq -e ".next.id == \"F001\" and .questions[0].id == \"F003\" and .proposals_pending[0].id == \"P001\" and .session.in_progress == true and .spend.cost_usd == 0.4 and .last_event.event == \"session_started\"" <<<"$J" >/dev/null'
+$S end >/dev/null 2>&1
+check "status --json outside a harness"       '(cd "$(mktemp -d)" && "$ROOT/scripts/harness-status.sh" --json | jq -e ".initialized == false" >/dev/null)'
+check "doctor: healthy project passes"        '.harness/doctor.sh >$LOGD/d1.log 2>&1 && grep -q "doctor: healthy" $LOGD/d1.log'
+check "doctor reports questions and proposals" 'grep -q "wait for your answer" $LOGD/d1.log && grep -q "await approval" $LOGD/d1.log'
+set_trusted_cfg '.pipeline += [{name:"review", use:"agent:pr-review-toolkit:code-reviewer"}] | .hooks = {bogus_event: ["cmd:true"]}'
+FH="$(mktemp -d)"
+check "doctor: missing required plugin agent fails" '! HOME="$FH" .harness/doctor.sh >$LOGD/d2.log 2>&1 && grep -q "✗ review: plugin agent pr-review-toolkit:code-reviewer not installed" $LOGD/d2.log'
+check "doctor: unknown hook event warns"      'grep -q "unknown event .bogus_event" $LOGD/d2.log'
+mkdir -p "$FH/.claude/plugins/cache/mkt/pr-review-toolkit/1.0.0/agents" && touch "$FH/.claude/plugins/cache/mkt/pr-review-toolkit/1.0.0/agents/code-reviewer.md"
+check "doctor: installed plugin agent resolves" 'HOME="$FH" .harness/doctor.sh >$LOGD/d3.log 2>&1; grep -q "✓ review: plugin agent pr-review-toolkit:code-reviewer" $LOGD/d3.log'
+set_trusted_cfg '.pipeline[-1].optional = true | .pipeline += [{name:"sec", use:"skill:security-review"}]'
+check "doctor: optional/unresolved skills only warn" 'HOME="$(mktemp -d)" .harness/doctor.sh >$LOGD/d4.log 2>&1 && grep -q "! review (optional)" $LOGD/d4.log && grep -q "! sec: security-review not found on disk" $LOGD/d4.log'
+check "doctor: stale wrapper is a problem"    'sed -i.bak "s#$ROOT#/nonexistent#g" .harness/step.sh; ! HOME="$(mktemp -d)" CLAUDE_PLUGIN_ROOT= .harness/doctor.sh >$LOGD/d5.log 2>&1; grep -q "wrappers point at a missing plugin copy" $LOGD/d5.log'
+"$ROOT/scripts/harness-setup.sh" --refresh >/dev/null
+check "loop-design skill ships with the plugin" 'head -5 "$ROOT/skills/loop-design/SKILL.md" | grep -q "^name: loop-design$"'
+
 echo; echo "passed: $PASS  failed: $FAIL"
 [[ $FAIL -eq 0 ]]

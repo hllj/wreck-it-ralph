@@ -4,6 +4,35 @@ set -euo pipefail
 HARNESS_DIR="${HARNESS_DIR:-.harness}"
 export HARNESS_DIR
 FL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/feature-list.sh"
+STEP="$(dirname "$FL")/harness-step.sh"
+
+# --json: a stable, versioned contract for other plugins, status lines and dashboards.
+if [[ "${1:-}" == "--json" ]]; then
+  [[ -f "$HARNESS_DIR/feature_list.json" ]] || { echo '{"schema":1,"initialized":false}'; exit 0; }
+  counts="{}"; for st in passing claimed failing todo needs_human dropped; do
+    counts="$(jq -c --arg k "$st" --argjson v "$("$FL" count "$st")" '.[$k] = $v' <<<"$counts")"; done
+  next="$("$FL" next || true)"
+  questions="$("$FL" questions | jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t") | {id: .[0], question: (.[1] // "")})')"
+  proposals="[]"; [[ -f "$HARNESS_DIR/proposals.json" ]] && proposals="$(jq -c '[.proposals[]? | select(.status == "pending") | {id, by, reason}]' "$HARNESS_DIR/proposals.json" 2>/dev/null || echo '[]')"
+  pid=""; [[ -f "$HARNESS_DIR/runner.pid" ]] && kill -0 "$(cat "$HARNESS_DIR/runner.pid")" 2>/dev/null && pid="$(cat "$HARNESS_DIR/runner.pid")"
+  state="{}"; [[ -f "$HARNESS_DIR/.step_state.json" ]] && state="$(jq -c . "$HARNESS_DIR/.step_state.json" 2>/dev/null || echo '{}')"
+  spend=""; [[ -f "$HARNESS_DIR/.step_state.json" ]] && spend="$("$STEP" ledger total 2>/dev/null || true)"
+  last="null"; [[ -s "$HARNESS_DIR/events.jsonl" ]] && last="$(tail -n 1 "$HARNESS_DIR/events.jsonl" | jq -c . 2>/dev/null || echo null)"
+  jq -n --argjson c "$counts" --arg next "$next" --argjson q "$questions" --argjson p "$proposals" --arg pid "$pid" \
+        --argjson st "$state" --arg spend "$spend" --argjson last "$last" --argjson stop "$([[ -f "$HARNESS_DIR/STOP" ]] && echo true || echo false)" '
+    def kv($k): ($spend | split("\n") | map(select(startswith($k + "="))) | .[0] // "" | sub("^[A-Z]+="; ""));
+    { schema: 1, initialized: true,
+      features: ($c + {total: ($c | to_entries | map(select(.key != "dropped") | .value) | add)}),
+      next: (if $next == "" then null else ($next | split("\t") | {id: .[0], description: .[1]}) end),
+      questions: $q, proposals_pending: $p,
+      runner: {running: ($pid != ""), pid: (if $pid == "" then null else ($pid | tonumber) end)},
+      stop_flag: $stop,
+      session: {in_progress: ($st.in_session // false), number: ($st.session // null), target: ($st.target // null)},
+      spend: (if $spend == "" then null else {cost_usd: (kv("COST") | tonumber? // 0), tokens: (kv("TOKENS") | tonumber? // 0), minutes: (kv("MINUTES") | tonumber? // 0)} end),
+      last_event: $last }'
+  exit 0
+fi
+
 [[ -f "$HARNESS_DIR/feature_list.json" ]] || { echo "No harness here. Run /wreck-it-ralph:init first."; exit 0; }
 echo "Features:  $("$FL" stats)"
 NEXT="$("$FL" next || true)"
