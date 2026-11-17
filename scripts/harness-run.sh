@@ -8,7 +8,7 @@
 # All gates (limits, stuck detection, spec lock, clean tree, summary) live in
 # harness-step.sh and are shared with the interactive mode.
 #
-# Usage: .harness/run.sh [--max-sessions N] [--once]
+# Usage: .harness/run.sh [--max-sessions N] [--once] [--rollout L1|L2|L3]
 # Stop:  touch .harness/STOP  (or /wreck-it-ralph:cancel)
 
 set -euo pipefail
@@ -36,11 +36,13 @@ PERM="$(cfg '.permission_mode // "bypassPermissions"')"
 MCP="$(cfg '.mcp_config // ""')"
 ALLOWED="$(cfg '.allowed_tools // ""')"
 ONCE=0
+ROLLOUT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --max-sessions) MAX_SESSIONS="${2:?number required}"; [[ "$MAX_SESSIONS" =~ ^[0-9]+$ ]] || die "--max-sessions must be a non-negative integer"; shift 2 ;;
     --once) ONCE=1; shift ;;
+    --rollout) ROLLOUT="${2:?L1|L2|L3 required}"; [[ "$ROLLOUT" =~ ^L[123]$ ]] || die "--rollout must be L1, L2 or L3"; shift 2 ;;
     -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
@@ -134,6 +136,7 @@ $task" ;;
 
 NEWRUN=(--new-run --owner-pid "$$")
 [[ -n "$MAX_SESSIONS" ]] && NEWRUN+=(--max-sessions "$MAX_SESSIONS")
+[[ -n "$ROLLOUT" ]] && NEWRUN+=(--rollout "$ROLLOUT")
 FIRST=1
 
 log "🎬 harness runner started"
@@ -148,6 +151,7 @@ while true; do
   n="$(kv SESSION "$OUT")"; target="$(kv TARGET "$OUT")"
   log "── session $n | $(kv STATS "$OUT") | target: $target"
   [[ -n "$(kv NOTE "$OUT")" ]] && log "   note: $(kv NOTE "$OUT")"
+  [[ -n "$(kv BRANCH "$OUT")" ]] && log "   rollout $(kv ROLLOUT "$OUT"): working on branch $(kv BRANCH "$OUT") (base $(kv BASE "$OUT") is not touched)"
 
   session_failed=0
   while IFS=$'\t' read -r agent blocking every when; do

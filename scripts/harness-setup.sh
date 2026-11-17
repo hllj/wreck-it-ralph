@@ -20,6 +20,7 @@
 #   --refresh               only rewrite the .harness/*.sh wrappers (after a plugin update/move), then exit
 #   --trust                 record the current risky config as trusted (see "trust" in the README), then exit
 #   --finalize              after the initializer ran: validate + lock the feature list + first commit
+#   --notify                add desktop-notification hooks (needs_human, run_ended) to config.json, then exit
 
 set -euo pipefail
 
@@ -29,7 +30,7 @@ export HARNESS_DIR
 # shellcheck source=harness-ignores.sh
 source "$PLUGIN_ROOT/scripts/harness-ignores.sh"
 
-PRESET=""; MAX_SESSIONS=""; FORCE=0; CHECK=0; FOR_INIT=0; FINALIZE=0; NO_BROWSER=0; ALLOW_DIRTY=0; BRANCH=""; REFRESH=0; TRUST=0
+PRESET=""; MAX_SESSIONS=""; FORCE=0; CHECK=0; FOR_INIT=0; FINALIZE=0; NO_BROWSER=0; ALLOW_DIRTY=0; BRANCH=""; REFRESH=0; TRUST=0; NOTIFY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --preset)       PRESET="${2:?web|cli|none}"; shift 2 ;;
@@ -43,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     --branch)       BRANCH="${2:?branch name required}"; shift 2 ;;
     --refresh)      REFRESH=1; shift ;;
     --trust)        TRUST=1; shift ;;
+    --notify)       NOTIFY=1; shift ;;
     -h|--help)      sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
@@ -56,7 +58,7 @@ case "$PRESET" in ""|web|cli|none) ;; *) echo "❌ --preset must be web, cli or 
 refresh_wrappers() {
   mkdir -p "$HARNESS_DIR"
   local pair name target
-  for pair in "feature-list.sh:feature-list.sh" "step.sh:harness-step.sh" "run.sh:harness-run.sh" "status.sh:harness-status.sh" "backlog.sh:backlog.sh" "doctor.sh:harness-doctor.sh"; do
+  for pair in "feature-list.sh:feature-list.sh" "step.sh:harness-step.sh" "run.sh:harness-run.sh" "status.sh:harness-status.sh" "backlog.sh:backlog.sh" "doctor.sh:harness-doctor.sh" "notify.sh:notify.sh" "trigger.sh:harness-trigger.sh" "intake.sh:harness-intake.sh"; do
     name="${pair%%:*}"; target="${pair##*:}"
     cat > "$HARNESS_DIR/$name" <<WRAP
 #!/bin/bash
@@ -76,6 +78,20 @@ WRAP
 
 if [[ $REFRESH -eq 1 ]]; then
   refresh_wrappers; echo "refreshed $HARNESS_DIR wrappers -> $PLUGIN_ROOT"; exit 0
+fi
+if [[ $NOTIFY -eq 1 ]]; then
+  [[ -f "$HARNESS_DIR/config.json" ]] || { echo "❌ $HARNESS_DIR/config.json missing: run setup first" >&2; exit 1; }
+  WAS_TRUSTED=0; "$PLUGIN_ROOT/scripts/harness-step.sh" trust status >/dev/null 2>&1 && WAS_TRUSTED=1
+  jq '.hooks = ((.hooks // {}) as $h | $h
+        + {needs_human: ((($h.needs_human // []) | if type == "string" then [.] else . end) + ["cmd:.harness/notify.sh"] | unique),
+           run_ended:   ((($h.run_ended   // []) | if type == "string" then [.] else . end) + ["cmd:.harness/notify.sh"] | unique)})' \
+    "$HARNESS_DIR/config.json" > "$HARNESS_DIR/c.tmp.$$" && mv "$HARNESS_DIR/c.tmp.$$" "$HARNESS_DIR/config.json"
+  refresh_wrappers
+  # Our own, requested change: keep trust if the config was trusted before it.
+  if [[ $WAS_TRUSTED -eq 1 ]]; then "$PLUGIN_ROOT/scripts/harness-step.sh" trust accept >/dev/null; fi
+  echo "✅ notification hooks added (needs_human, run_ended -> .harness/notify.sh)"
+  [[ $WAS_TRUSTED -eq 1 ]] || echo "   ⚠ review the config with /wreck-it-ralph:trust before the next run"
+  exit 0
 fi
 if [[ $TRUST -eq 1 ]]; then
   "$PLUGIN_ROOT/scripts/harness-step.sh" trust accept; exit 0
@@ -199,7 +215,7 @@ fi
 if [[ $FOR_INIT -eq 1 || $FORCE -eq 1 ]]; then find "$HARNESS_DIR/sessions" -type f -delete 2>/dev/null || true; fi
 
 refresh_wrappers
-CREATED+=("wrappers: feature-list.sh step.sh run.sh status.sh backlog.sh doctor.sh")
+CREATED+=("wrappers: feature-list.sh step.sh run.sh status.sh backlog.sh doctor.sh notify.sh trigger.sh intake.sh")
 
 if [[ ! -f "$HARNESS_DIR/README.md" ]]; then
   cat > "$HARNESS_DIR/README.md" <<'EOF'

@@ -1,6 +1,6 @@
 ---
 description: "Run the harness loop with Claude Code subagents (fresh context per agent): coder -> tester each session"
-argument-hint: "[--max-sessions N]"
+argument-hint: "[--max-sessions N] [--rollout L1|L2|L3]"
 allowed-tools: ["Bash(.harness/step.sh:*)", "Bash(.harness/status.sh:*)", "Bash(.harness/feature-list.sh list:*)", "Bash(.harness/feature-list.sh questions)", "Bash(.harness/backlog.sh list:*)", "Bash(${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh --refresh)", "Agent"]
 ---
 
@@ -12,13 +12,13 @@ You are the **ORCHESTRATOR** of a long-running agent harness. You do NOT write c
 
 If `.harness/step.sh` does not exist, tell the user to run `/wreck-it-ralph:init` first and stop. Otherwise first refresh the wrappers (they may point at an older plugin copy): run `"${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh" --refresh`.
 
-The only option you may pass through from the user's arguments is `--max-sessions <non-negative integer>`; ignore and never pass anything else to a command.
+The only options you may pass through from the user's arguments are `--max-sessions <non-negative integer>` and `--rollout L1|L2|L3` (both only on the first `begin --new-run`); ignore and never pass anything else to a command.
 
 ## The loop
 
 **A. Begin a session.** Run `.harness/step.sh begin --new-run [--max-sessions N]` (use `--new-run` only for the very first iteration of this run; afterwards run plain `.harness/step.sh begin`). Read the `KEY=VALUE` lines:
 - `DECISION=continue` → go to B (note `SESSION` and `TARGET`).
-- `DECISION=done` or `stop` → go to **Finish** with its `REASON` and `CODE`. If `CODE=5` the config is not trusted: tell the user to run `/wreck-it-ralph:trust`. If `CODE=4` the working tree has uncommitted changes: tell the user to commit or stash them (or set `allow_dirty` in `.harness/config.json`). If `CODE=6` git user.name/user.email are not configured: show the user the command from `REASON`. If `CODE=7` another loop is running (or left a stale lock): tell the user; only the user may decide to clear it with `.harness/step.sh unlock` - never run `unlock` yourself. If `CODE=8` every remaining feature waits for a human answer: show `.harness/feature-list.sh questions` and tell the user to answer with `/wreck-it-ralph:backlog answer <ID> "..."`, then run again. If `CODE=9` the remaining features are blocked by dependencies that cannot pass: show `.harness/feature-list.sh list --failing`. If `CODE=10` a run budget (`budget` in `.harness/config.json`) is used up: tell the user what was spent (`.harness/step.sh ledger total`) and that raising the cap or starting a new run continues. A `NOTE=` line is informational; relay it in one line.
+- `DECISION=done` or `stop` → go to **Finish** with its `REASON` and `CODE`. If `CODE=5` the config is not trusted: tell the user to run `/wreck-it-ralph:trust`. If `CODE=4` the working tree has uncommitted changes: tell the user to commit or stash them (or set `allow_dirty` in `.harness/config.json`). If `CODE=6` git user.name/user.email are not configured: show the user the command from `REASON`. If `CODE=7` another loop is running (or left a stale lock): tell the user; only the user may decide to clear it with `.harness/step.sh unlock` - never run `unlock` yourself. If `CODE=8` every remaining feature waits for a human answer: show `.harness/feature-list.sh questions` and tell the user to answer with `/wreck-it-ralph:backlog answer <ID> "..."`, then run again. If `CODE=9` the remaining features are blocked by dependencies that cannot pass: show `.harness/feature-list.sh list --failing`. If `CODE=10` a run budget (`budget` in `.harness/config.json`) is used up: tell the user what was spent (`.harness/step.sh ledger total`) and that raising the cap or starting a new run continues. If `CODE=12` the rollout branch is wrong (detached HEAD, empty repository, or someone switched branches mid-run): relay the `REASON`, which includes the fix. A `NOTE=` line is informational; relay it in one line. If `begin --new-run` prints `BRANCH=`, tell the user once that this run works on that branch (rollout `ROLLOUT=`) and their branch `BASE=` is not touched.
 
 **B. Run the pipeline, strictly one step at a time, in order.** Run `.harness/step.sh plan`; each line is `name<TAB>blocking<TAB>every<TAB>when`. For each line (`<agent>` below is the step name):
 1. Run `.harness/step.sh task <agent>`. If the output starts with `SKIP:` skip this step (print nothing). Otherwise the output is the task message.
@@ -38,6 +38,8 @@ Do not paste or summarize the subagent's full report. If it flagged something th
 **C. End the session.** Run `.harness/step.sh end` and print one line from it (if it prints `UNVERIFIED_RESET=<ids>`, mention that those features were marked passing without tester verification and were reset; if it prints `WARN=`, relay it; `VERIFY_FAILED=<ids>` means the gate's verify commands failed for those features; `NEEDS_HUMAN=<ids>` means they were escalated after repeated failures and the loop moves on without them; `CODE=11` with `NEXT=stop` means the session's diff exceeded `budget.max_diff_lines` and the user should review the commits before running again), e.g. `session 3 | 5/12 passing | commits 2 | diff 140 lines | stuck 0/3`.
 - `NEXT=continue` → back to **A**.
 - `NEXT=stop` → **Finish** with its `REASON` and `CODE`.
+
+**Notify.** If a `PushNotification` tool is available in this session, send one short notification when `end` reports `NEEDS_HUMAN=`, and one when the run finishes (stop reason and features passing), so a user who stepped away knows. Load it with ToolSearch first if it is only listed as deferred. Never send anything else through it.
 
 **Finish.** Run `.harness/step.sh summary "<REASON>" <CODE>` and give the user a short wrap-up: why it stopped, features passing, and the path `.harness/last-run.md`. If it stopped for being stuck, name the failing features and their notes (`.harness/feature-list.sh list --failing`). Always list open questions (`.harness/feature-list.sh questions`) and pending backlog proposals (`.harness/backlog.sh list`) with how to act on them (`/wreck-it-ralph:backlog answer|approve`).
 

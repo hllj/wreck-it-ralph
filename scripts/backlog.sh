@@ -106,6 +106,10 @@ do_approve() { # pid
   [[ "$(jq -r --arg id "$pid" '.proposals[] | select(.id == $id) | .status' "$PROPS")" == "pending" ]] || die "$pid is not pending"
   payload="$(jq -c --arg id "$pid" '.proposals[] | select(.id == $id) | .payload' "$PROPS")"
   check_payload "$payload"
+  if [[ "$(jq -r --arg id "$pid" '.proposals[] | select(.id == $id) | .by' "$PROPS")" == intake:* ]]; then
+    echo "backlog: NOTE $pid was derived from an external issue (untrusted text); its verify commands now become trusted:" >&2
+    jq -r '[(.add // [])[], (.amend // [])[]] | .[] | (.verify // []) | if type == "string" then [.] else . end | .[] | "  $ " + .' <<<"$payload" >&2
+  fi
   result="$(dry_run "$payload" "$pid")"
   tmp="$FILE.tmp.$$"; printf '%s\n' "$result" > "$tmp" && mv "$tmp" "$FILE"
   "$FL" lock >/dev/null

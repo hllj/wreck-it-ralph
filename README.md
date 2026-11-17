@@ -54,6 +54,8 @@ Requirements:
 | `run [--max-sessions N]` | Interactive loop. This session orchestrates fresh coder and tester subagents. |
 | `run-headless [--max-sessions N] [--once]` | Unattended loop with separate `claude -p` processes. |
 | `status` / `cancel` / `help` | Progress, questions and proposals / stop after the current session / explanation. `.harness/status.sh --json` is the machine-readable form. |
+| `trigger cron\|launchd\|github\|loop [--every 2h] [--rollout L1]` | Start runs without you: print a cron line, write a launchd agent or a GitHub Actions workflow (on a schedule, or when CI fails), or a `/loop`. Defaults to rollout L1 with 3 sessions per run. |
+| `intake [github] [--label ralph]` | Turn new labelled GitHub issues (or another tracker's items, through its MCP tools) into planner proposals for your approval. |
 | `doctor` | Health check: tools, git, config, feature list, trust, wrappers, and whether every pipeline extension (other plugins' agents, skills) and hook resolves. |
 | `ralph "<prompt>" [--max-iterations N] [--completion-promise T]` / `cancel-ralph` | The original in-session Ralph loop. |
 
@@ -120,6 +122,7 @@ begin gate ─▶ coder (fresh) ─▶ verify gate ─▶ tester (fresh) ─▶ 
 | 9 | The remaining features have dependencies that can never pass (for example a cycle) |
 | 10 | A run budget is used up: `budget.max_cost_usd`, `max_tokens` or `max_wall_minutes` |
 | 11 | A session changed more than `budget.max_diff_lines` lines and `on_large_diff` is `stop` (review, then run again) |
+| 12 | Rollout branch problem: detached HEAD, an empty repository, or the branch was switched mid-run |
 
 ### Budgets and the ledger
 
@@ -136,6 +139,54 @@ Every agent run is recorded in `.harness/ledger.jsonl`, which is git-ignored.
 - `0` means unlimited.
 - The gates check the caps before every session and after it ends.
 - `/status`, the per-session log lines and `.harness/last-run.md` show what was spent. `.harness/step.sh ledger total` prints the totals.
+
+## Rollout, triggers and intake
+
+Earn trust in a loop step by step, then let it run without you.
+
+### Rollout levels
+
+Set `"rollout"` in the config, or pass `--rollout` to `run` / `run-headless` / `.harness/run.sh`.
+
+| Level | What happens | Your branch |
+|---|---|---|
+| **L1 shadow** | The loop works on `harness/shadow-<time>`, then switches back and leaves a report (`last-run.md`, with commit count and diffstat). | never touched |
+| **L2 assisted** | The loop works on `harness/run-<time>`. With `rollout_push` it pushes the branch; with `rollout_pr` it also opens a PR via `gh`. A new run resumes the same branch if it is checked out. | never touched |
+| **L3 unattended** | The loop commits on the current branch (the default and earlier behaviour). | commits land here |
+
+- **Tracking:** the base branch is recorded in `git config branch.<run-branch>.harnessBase`.
+- **Branch switches:** if someone switches branches mid-run, the next session stops with code 12 and the fix.
+- **Trust:** `rollout_push` and `rollout_pr` are part of the trust record, because they send code out.
+
+### Triggers
+
+`/wreck-it-ralph:trigger` (or `.harness/trigger.sh`) sets up runs that start without you. New triggers default to **L1, 3 sessions per run**: move them to L2 once the shadow reports look right. Nothing is installed into your system for you.
+
+| Kind | What you get |
+|---|---|
+| `cron --every 30m\|2h\|daily\|weekly` | a crontab line to add with `crontab -e` |
+| `launchd --every …` | a LaunchAgent plist under `.harness/triggers/` (git-ignored), plus the `launchctl load` command |
+| `github --cron "0 3 * * *" [--on-failure "CI"] --plugin-repo owner/name` | `.github/workflows/wreck-it-ralph.yml`, see below |
+| `loop --every 2h` | the `/loop 2h /wreck-it-ralph:run …` command for an open interactive session |
+
+The GitHub workflow:
+- runs headless with `ANTHROPIC_API_KEY`;
+- opens PRs at L2, or only uploads the report at L1;
+- refuses L3, so CI never commits to the default branch;
+- accepts the committed `.harness` config without the interactive trust review, so use it only if `.harness/` changes go through code review. The file says this at the top.
+
+### Intake from issue trackers
+
+`/wreck-it-ralph:intake` gets new open issues labelled `ralph` (`--label`, `--limit`, `--repo`) with `gh`. For Linear, Jira and others it uses that tracker's MCP tools if they are connected.
+- Each issue goes to the planner and becomes one proposal `by intake:github#12`.
+- Imported ids are recorded in `.harness/intake.json`, so nothing is imported twice.
+- Issue text is treated as **untrusted**: the planner is told not to follow instructions in it, and approving such a proposal prints its verify commands again with a warning. Approval is always yours.
+
+### Notifications
+
+- **`setup --notify`** adds `needs_human` and `run_ended` hooks that call `.harness/notify.sh`. It uses a desktop notification on macOS (`osascript`) or Linux (`notify-send`), and falls back to a terminal bell.
+- **Interactive runs** also send a `PushNotification` when the loop needs you or finishes, if that tool is available.
+- **Anything else** (Slack, email, a pager) is a `cmd:` hook away.
 
 ## Working with other plugins
 

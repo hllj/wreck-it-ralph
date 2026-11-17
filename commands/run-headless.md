@@ -1,12 +1,12 @@
 ---
 description: "Run the harness loop headless in the background (separate claude -p processes, for unattended runs)"
-argument-hint: "[--max-sessions N] [--once]"
+argument-hint: "[--max-sessions N] [--once] [--rollout L1|L2|L3]"
 allowed-tools: ["Bash(.harness/run.sh:*)", "Bash(.harness/status.sh:*)", "Bash(${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh --refresh)"]
 ---
 
 # Harness Run (headless)
 
-Arguments given by the user: $ARGUMENTS. The only options you may pass through are `--max-sessions <non-negative integer>` and `--once`; never pass anything else to a command.
+Arguments given by the user: $ARGUMENTS. The only options you may pass through are `--max-sessions <non-negative integer>`, `--once` and `--rollout L1|L2|L3`; never pass anything else to a command.
 
 First refresh the wrappers: `"${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh" --refresh`. Then use the Bash tool with `run_in_background: true` to run `.harness/run.sh` plus those options.
 

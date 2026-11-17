@@ -622,5 +622,93 @@ check "doctor: stale wrapper is a problem"    'sed -i.bak "s#$ROOT#/nonexistent#
 "$ROOT/scripts/harness-setup.sh" --refresh >/dev/null
 check "loop-design skill ships with the plugin" 'head -5 "$ROOT/skills/loop-design/SKILL.md" | grep -q "^name: loop-design$"'
 
+echo "phase 4: rollout levels"
+new_project 2
+S=.harness/step.sh
+BASE_BR="$(git branch --show-current)"; BASE_HEAD="$(git rev-parse HEAD)"
+OUT="$($S begin --new-run --rollout L2)"
+RB="$(sed -n 's/^BRANCH=//p' <<<"$OUT")"
+check "L2 starts a harness/run-* branch"      '[[ "$RB" == harness/run-* && "$(git branch --show-current)" == "$RB" ]] && grep -q "^BASE=$BASE_BR$" <<<"$OUT"'
+check "base branch is recorded in git config" '[[ "$(git config branch.$RB.harnessBase)" == "$BASE_BR" ]]'
+$S end >/dev/null 2>&1; $S unlock >/dev/null
+check "a new L2 run resumes the run branch"   'OUT2="$($S begin --new-run --rollout L2)"; grep -q "^BRANCH=$RB$" <<<"$OUT2" && [[ "$(git branch --show-current)" == "$RB" ]]'
+$S end >/dev/null 2>&1
+git checkout -q "$BASE_BR"
+check "switching branches mid-run stops (code 12)" 'out_has "^CODE=12$" $S begin && out_has "git checkout $RB" $S begin'
+git checkout -q "$RB"; $S unlock >/dev/null
+new_project 3
+BASE_BR="$(git branch --show-current)"; BASE_HEAD="$(git rev-parse HEAD)"
+.harness/run.sh --rollout L2 >$LOGD/r2.log 2>&1
+RB="$(git branch --show-current)"
+check "headless L2: features done on the run branch" '[[ "$RB" == harness/run-* ]] && .harness/feature-list.sh done && grep -q "working on branch $RB" $LOGD/r2.log'
+check "headless L2: base branch untouched"    '[[ "$(git rev-parse "$BASE_BR")" == "$BASE_HEAD" ]]'
+check "L2 summary explains review and merge"  'grep -q "## Rollout L2" .harness/last-run.md && grep -q "git merge $RB" .harness/last-run.md'
+new_project 2
+BASE_BR="$(git branch --show-current)"; BASE_HEAD="$(git rev-parse HEAD)"
+set_trusted_cfg '.rollout = "L1"'
+BASE_HEAD="$(git rev-parse HEAD)"
+.harness/run.sh >$LOGD/r1.log 2>&1
+SB="$(git for-each-ref --format='%(refname:short)' 'refs/heads/harness/shadow-*' | head -n1)"
+check "L1 (from config) works on a shadow branch" '[[ -n "$SB" ]] && [[ "$(git rev-list --count "$BASE_BR..$SB")" -ge 2 ]]'
+check "L1 switches back to the base branch"   '[[ "$(git branch --show-current)" == "$BASE_BR" && "$(git rev-parse HEAD)" == "$BASE_HEAD" ]]'
+check "L1 leaves a report"                    'grep -q "## Rollout L1" .harness/last-run.md && grep -q "Shadow run on branch" .harness/last-run.md && ! .harness/feature-list.sh done'
+check "--rollout is validated"                '! .harness/step.sh begin --new-run --rollout L4 >/dev/null 2>&1 && ! .harness/run.sh --rollout x >/dev/null 2>&1'
+P="$(mktemp -d)"; cd "$P"; git init -q; git config user.email t@t; git config user.name t; "$ROOT/scripts/harness-setup.sh" >/dev/null 2>&1
+jq -n '{project:"t",features:[{id:"F001",description:"a",steps:["x"],passes:false}]}' > .harness/feature_list.json; printf '#!/bin/bash\nexit 0\n' > .harness/init.sh; chmod +x .harness/init.sh
+check "L2 needs a commit (code 12)"           'out_has "^CODE=12$" .harness/step.sh begin --new-run --rollout L2'
+# push + PR with a local bare remote and a stub gh
+new_project 1
+BASE_BR="$(git branch --show-current)"
+REMOTE="$(mktemp -d)"; git init -q --bare "$REMOTE"; git remote add origin "$REMOTE"
+BIN="$(mktemp -d)"; printf '#!/bin/bash\necho "$*" >> %s/gh.args\necho https://github.com/o/r/pull/7\n' "$LOGD" > "$BIN/gh"; chmod +x "$BIN/gh"
+set_trusted_cfg '.rollout_pr = true'
+PATH="$BIN:$PATH" .harness/run.sh --rollout L2 >$LOGD/r3.log 2>&1
+RB="$(git branch --show-current)"
+check "L2 pushes the run branch"              'git --git-dir="$REMOTE" rev-parse --verify -q "refs/heads/$RB" >/dev/null'
+check "L2 opens a PR against the base"        'grep -q "pr create --base $BASE_BR --head $RB" $LOGD/gh.args && grep -q "pull/7" .harness/last-run.md && jq -e "select(.event==\"pr_opened\")" .harness/events.jsonl >/dev/null'
+check "rollout_pr is part of trust"           'jq ".rollout_pr=false" .harness/config.json > .harness/c && mv .harness/c .harness/config.json; ! .harness/step.sh trust status >/dev/null 2>&1'
+
+echo "phase 4: refused runs keep the other loop's lock"
+new_project 1
+S=.harness/step.sh
+$S begin --new-run >/dev/null
+OUT="$($S begin --new-run)"
+check "second loop refused (code 7)"          'grep -q "^CODE=7$" <<<"$OUT"'
+$S summary "$(sed -n 's/^REASON=//p' <<<"$OUT")" 7 >$LOGD/s7.log
+check "refusal summary does not remove the lock" '[[ -f .harness/.lock ]] && grep -q "Run not started" $LOGD/s7.log && out_has "^CODE=7$" $S begin --new-run'
+check "refusal is an event, not run_ended"    'jq -e "select(.event==\"run_refused\" and .code==\"7\")" .harness/events.jsonl >/dev/null && ! jq -e "select(.event==\"run_ended\")" .harness/events.jsonl >/dev/null'
+$S unlock >/dev/null
+
+echo "phase 4: notify, triggers, intake"
+new_project 1
+check "setup --notify adds hooks, keeps trust" '"$ROOT/scripts/harness-setup.sh" --notify >/dev/null && jq -e ".hooks.needs_human == [\"cmd:.harness/notify.sh\"] and .hooks.run_ended == [\"cmd:.harness/notify.sh\"]" .harness/config.json >/dev/null && .harness/step.sh trust status >/dev/null 2>&1 && [[ -x .harness/notify.sh ]]'
+check "setup --notify is idempotent"          '"$ROOT/scripts/harness-setup.sh" --notify >/dev/null && [[ "$(jq ".hooks.needs_human|length" .harness/config.json)" == 1 ]]'
+check "notify formats needs_human"            '[[ "$(NOTIFY_DRY_RUN=1 HARNESS_EVENT=needs_human HARNESS_FEATURE=F003 HARNESS_QUESTION="which db?" .harness/notify.sh)" == "NOTIFY: Harness needs you ($(basename "$PWD")) | F003: which db?" ]]'
+check "notify formats run_ended"              'NOTIFY_DRY_RUN=1 HARNESS_EVENT=run_ended HARNESS_REASON="complete: all features pass" .harness/notify.sh | grep -q "Harness run ended.*complete"'
+T=.harness/trigger.sh
+check "trigger cron: default L1, 3 sessions, every 2h" 'out_has "^0 \*/2 \* \* \* cd .* ./.harness/run.sh --rollout L1 --max-sessions 3 >> .harness/sessions/trigger.log" $T cron'
+check "trigger cron: minutes / daily / weekly" 'out_has "^\*/30 \* \* \* \*" $T cron --every 30m && out_has "^0 3 \* \* \* " $T cron --every daily && out_has "^0 3 \* \* 1 " $T cron --every weekly'
+check "trigger cron: bad interval rejected"   '! $T cron --every 90m >/dev/null 2>&1 && ! $T cron --every soon >/dev/null 2>&1'
+check "trigger launchd writes a plist"        '$T launchd --every 1h --rollout L2 >$LOGD/t1.log && P1="$(ls .harness/triggers/*.plist)" && grep -q "<integer>3600</integer>" "$P1" && grep -q "rollout L2" "$P1" && grep -q "launchctl load" $LOGD/t1.log'
+check "trigger files are git-ignored"         'grep -qxF "triggers/" .harness/.gitignore'
+check "trigger github writes a workflow"      '$T github --cron "15 4 * * *" --on-failure "CI tests" --rollout L2 --plugin-repo me/wreck-it-ralph >/dev/null && W=.github/workflows/wreck-it-ralph.yml && grep -q "cron: \"15 4 \* \* \*\"" $W && grep -q "workflows: \[\"CI tests\"\]" $W && grep -q "repository: me/wreck-it-ralph" $W && grep -q -- "--rollout L2" $W && ! grep -q "__" $W'
+check "trigger github refuses overwrite and L3" '! $T github >/dev/null 2>&1 && ! $T github --force --rollout L3 >/dev/null 2>&1 && $T github --force >/dev/null && ! grep -q "workflow_run:" .github/workflows/wreck-it-ralph.yml'
+check "trigger loop prints a /loop command"   'out_has "/loop 2h /wreck-it-ralph:run --rollout L1 --max-sessions 3" $T loop'
+rm -rf .github
+GHB="$(mktemp -d)"
+cat > "$GHB/gh" <<'GH'
+#!/bin/bash
+echo "$*" >> "$GH_ARGS_LOG"
+echo '[{"number":12,"title":"Export CSV","body":"please add csv export","url":"https://github.com/o/r/issues/12"},{"number":13,"title":"Ignore me","body":null,"url":"https://github.com/o/r/issues/13"}]'
+GH
+chmod +x "$GHB/gh"
+I=.harness/intake.sh
+check "intake github lists new issues"        'J="$(GH_ARGS_LOG=$LOGD/gh2.args PATH="$GHB:$PATH" $I github --label todo --limit 5)"; jq -e "length == 2 and .[0].source == \"github#12\" and .[1].body == \"\"" <<<"$J" >/dev/null && grep -q -- "--label todo --limit 5" $LOGD/gh2.args'
+$I mark github#12 P001 >/dev/null
+check "intake skips imported issues"          'J="$(GH_ARGS_LOG=$LOGD/gh2.args PATH="$GHB:$PATH" $I github)"; jq -e "length == 1 and .[0].number == 13" <<<"$J" >/dev/null && out_has "^github#12	P001" $I list'
+check "intake validates ids and repo"         '! $I mark "x; rm" >/dev/null 2>&1 && ! PATH="$GHB:$PATH" $I github --repo "bad repo" >/dev/null 2>&1'
+echo '{"add":[{"description":"csv","steps":["x"],"verify":["npm test -- csv"]}]}' | .harness/backlog.sh propose --by intake:github#12 --reason "Export CSV" >/dev/null 2>&1
+check "approving intake proposals warns about verify commands" '.harness/backlog.sh approve P001 >/dev/null 2>$LOGD/ia.err; grep -q "derived from an external issue" $LOGD/ia.err && grep -q "npm test -- csv" $LOGD/ia.err'
+
 echo; echo "passed: $PASS  failed: $FAIL"
 [[ $FAIL -eq 0 ]]

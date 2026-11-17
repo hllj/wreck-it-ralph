@@ -1,6 +1,6 @@
 # wreck-it-ralph v3: analysis and improvement plan
 
-Status: **Phases 0 and 1 are implemented in v3.0.0, Phase 2 in v3.1.0 and Phase 3 in v3.2.0** (2026-11-17). Phases 4 and 5 are still proposals. The plan started from `wreck-it-ralph-loop` v2.1.0.
+Status: **Phases 0 and 1 are implemented in v3.0.0, Phase 2 in v3.1.0 Phase 3 in v3.2.0 and Phase 4 in v3.3.0** (2026-11-17). Phase 5 is still a proposal. The plan started from `wreck-it-ralph-loop` v2.1.0.
 
 Implementation notes (where v3.0.0 differs from the plan below):
 - State stays in `.harness/` and the config stays `.harness/config.json` (now with `"version": 3`). There is no `.ralph/` directory and no `loop.json` yet. Moving the directory brought churn for existing users and no benefit, so it is deferred until the Phase 3 loop spec needs a new file.
@@ -20,6 +20,17 @@ Implementation notes (where v3.0.0 differs from the plan below):
   - **Hooks run only `cmd:` handlers**, gated by trust, and never block the loop. Agent-based reactions belong in the pipeline with a `when` condition, which keeps a single place where agents are spawned.
   - **Also shipped:** `status.sh --json` (schema 1), `/doctor` (resolves plugin agents, skills and commands in `~/.claude/plugins/cache`, and treats skills not found on disk as warnings because they may be built in), and the `skills/loop-design` skill.
   - **Upgrade note:** the trust record now covers pipeline `use:` values and hooks, so re-run `/trust` after upgrading.
+- Phase 4, as built:
+  - **Rollout levels.**
+    - L1 runs on a shadow branch, switches back at the end, and leaves a report.
+    - L2 runs on a run branch, with optional `rollout_push`/`rollout_pr` (gh). A new run resumes that branch.
+    - L3 is unchanged.
+    - Both new levels are enforced by the gates: the branch is checked at every `begin` (stop code 12), and `rollout_push`/`rollout_pr` are in trust.
+  - **Triggers.** `trigger.sh` prints a cron line, writes a launchd plist, writes a GitHub Actions workflow (schedule and/or `workflow_run` on failure, never L3), or prints a `/loop` command. It never installs anything into the system. New triggers default to L1 with 3 sessions. CI failures are handled as "run the loop on a branch": a red suite usually shows up as a failing `final_verify_command` or as failing features. No CI-specific feature intake was built.
+  - **Intake.** `intake.sh github` uses `gh issue list` and dedupes against `.harness/intake.json`. The command has the planner file one proposal per issue (`by intake:<source>`). Other trackers go through their MCP tools. Issue text is untrusted, and approving such a proposal re-prints its verify commands.
+  - **Notifications.** `notify.sh` (osascript / notify-send / bell) can be used as a hook handler. `setup --notify` wires it up and keeps trust if the config was already trusted. Interactive runs use `PushNotification` when it is available.
+  - **Bug fixed:** `summary` used to delete the loop lock even when `begin --new-run` had refused to start (codes 4–7), which could remove another running loop's lock. Refusals now print "Run not started", emit `run_refused`, and leave the lock and `last-run.md` alone.
+  - **Not verified:** the GitHub Actions workflow is generated and parsed in the tests, but it has not been run on GitHub.
 - Trust now has two parts: the config hash and the verify-command hash. Commands written by the initializer or approved in a proposal are trusted automatically, while repo-supplied ones need `/trust`.
 
 ## 1. The three source ideas

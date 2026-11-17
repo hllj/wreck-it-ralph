@@ -6,7 +6,7 @@
 #   - .harness/run.sh (headless runner spawning `claude -p` processes)
 #
 # Usage: .harness/step.sh <command> [args]
-#   begin [--new-run] [--max-sessions N] [--owner-pid PID]
+#   begin [--new-run] [--max-sessions N] [--owner-pid PID] [--rollout L1|L2|L3]
 #         Decide whether to start another session. Prints KEY=VALUE lines:
 #         DECISION=continue|done|stop  SESSION=n  TARGET=<feature id>  STATS=...  REASON=...  CODE=<exit code>
 #   plan                         list pipeline steps: name<TAB>blocking<TAB>every<TAB>when
@@ -30,7 +30,14 @@
 #
 # begin --new-run stop codes: 4 dirty tree, 5 config not trusted, 6 git identity missing, 7 another loop running
 # begin/end stop codes:       2 max sessions, 3 stuck, 8 waiting for a human answer, 9 blocked by dependencies,
-#                             10 budget exhausted (cost/tokens/wall time), 11 session diff over budget.max_diff_lines
+#                             10 budget exhausted (cost/tokens/wall time), 11 session diff over budget.max_diff_lines,
+#                             12 rollout branch problem (detached HEAD, no commits, or not on the run branch)
+#
+# Rollout (config `rollout`, or --rollout on a new run):
+#   L3  unattended: commit on the current branch (default)
+#   L2  assisted:   work on a new branch harness/run-<time>; at the end optionally push it and open a PR
+#                   (rollout_push / rollout_pr); your branch is never committed to
+#   L1  shadow:     work on harness/shadow-<time>, then switch back to your branch and leave only a report
 
 set -euo pipefail
 
@@ -87,7 +94,7 @@ TRUST_FILE="$HARNESS_DIR/.trusted"
 mcp_path() { cfg '.mcp_config // ""'; }
 trust_material() { # everything that can run commands or steer agents with elevated rights
   jq -S '{permission_mode, allowed_tools, final_verify_command, verify_static, claude_bin, model, mcp_config,
-          uses: [.pipeline[]? | .use // empty], hooks: (.hooks // {})}' "$CFG"
+          uses: [.pipeline[]? | .use // empty], hooks: (.hooks // {}), rollout_push, rollout_pr}' "$CFG"
   local m; m="$(mcp_path)"; if [[ -n "$m" && -f "$m" ]]; then echo "## mcp: $m"; cat "$m"; fi
   local f; for f in $(ls "$HARNESS_DIR"/agents/*.md 2>/dev/null | sort); do echo "## agent: $f"; cat "$f"; done
 }
@@ -238,10 +245,11 @@ session_diff_lines() { # lines added+removed since the session started, outside 
 ids_json() { "$FL" ids --status "$1" | jq -R -s -c 'split("\n")|map(select(length>0))'; }
 
 cmd_begin() {
-  local newrun=0 maxs="" owner=0
+  local newrun=0 maxs="" owner=0 rollout_opt=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --new-run) newrun=1; shift ;;
+      --rollout) rollout_opt="${2:?L1|L2|L3 required}"; shift 2 ;;
       --max-sessions) maxs="${2:?number required}"; shift 2 ;;
       --owner-pid) owner="${2:?pid required}"; shift 2 ;;
       *) die "unknown option: $1" ;;
@@ -249,6 +257,7 @@ cmd_begin() {
   done
   [[ "$owner" =~ ^[0-9]+$ ]] || die "--owner-pid must be a number"
   [[ -z "$maxs" || "$maxs" =~ ^[0-9]+$ ]] || die "--max-sessions must be a non-negative integer, got: $maxs"
+  [[ -z "$rollout_opt" || "$rollout_opt" =~ ^L[123]$ ]] || die "--rollout must be L1, L2 or L3, got: $rollout_opt"
   mkdir -p "$HARNESS_DIR/sessions"
   if [[ $newrun -eq 1 || ! -f "$STATE" ]]; then
     if ! is_trusted; then
@@ -268,10 +277,29 @@ cmd_begin() {
     fi
     lock_write "$owner"
     if [[ -f "$HARNESS_DIR/STOP" ]]; then rm -f "$HARNESS_DIR/STOP"; emit NOTE "cleared a STOP flag left from an earlier cancel (starting a new run overrides it)"; fi
+    local rollout base="" rbranch=""
+    rollout="${rollout_opt:-$(cfg '.rollout // "L3"')}"
+    [[ "$rollout" =~ ^L[123]$ ]] || { rm -f "$LOCK"; die "config rollout must be L1, L2 or L3, got: $rollout"; }
+    if [[ "$rollout" != L3 ]]; then
+      base="$(git branch --show-current 2>/dev/null || true)"
+      if [[ -z "$base" ]] || ! git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+        rm -f "$LOCK"; stop_decision "rollout $rollout needs a checked-out branch with at least one commit (detached HEAD or empty repository)" 12; return 0
+      fi
+      if [[ "$base" == harness/* && -n "$(git config "branch.$base.harnessBase" 2>/dev/null)" ]]; then
+        rbranch="$base"; base="$(git config "branch.$rbranch.harnessBase")"   # resume an earlier run branch
+      else
+        rbranch="harness/$([[ "$rollout" == L1 ]] && echo shadow || echo run)-$(date +%Y%m%d-%H%M%S)"
+        git checkout -q -b "$rbranch" || { rm -f "$LOCK"; stop_decision "could not create branch $rbranch" 12; return 0; }
+        git config "branch.$rbranch.harnessBase" "$base"; git config "branch.$rbranch.harnessRollout" "$rollout"
+      fi
+      emit ROLLOUT "$rollout"; emit BRANCH "$rbranch"; emit BASE "$base"
+    fi
     jq -n --argjson run "$(date +%s)" --arg head "$(git rev-parse HEAD 2>/dev/null || echo "")" \
           --argjson max "${maxs:-$(cfg '.max_sessions // 100')}" \
       --argjson s0 "$(cat "$SESSION_FILE" 2>/dev/null || echo 0)" \
-      '{run:$run, start_head:$head, ran:0, stuck:0, extra_task:"", max:$max, session:0, session_start:$s0, in_session:false}' > "$STATE"
+      --arg rollout "$rollout" --arg rb "$rbranch" --arg base "$base" \
+      '{run:$run, start_head:$head, ran:0, stuck:0, extra_task:"", max:$max, session:0, session_start:$s0, in_session:false,
+        rollout:$rollout, run_branch:$rb, base_branch:$base}' > "$STATE"
     ensure_all_ignores "$HARNESS_DIR" >&2 || true
     fire run_started "stats=$("$FL" stats)" >&2
   fi
@@ -282,6 +310,10 @@ cmd_begin() {
 
   if [[ -f "$HARNESS_DIR/STOP" ]]; then
     emit DECISION stop; emit REASON "stopped by STOP flag"; emit CODE 0; return 0
+  fi
+  local rb; rb="$(st_get run_branch)"
+  if [[ -n "$rb" && "$(git branch --show-current 2>/dev/null)" != "$rb" ]]; then
+    stop_decision "not on this run's branch $rb (now on '$(git branch --show-current 2>/dev/null)'); switch back with: git checkout $rb" 12; return 0
   fi
   if [[ "$ran" -ge "$max" ]]; then
     emit DECISION stop; emit REASON "max sessions reached"; emit CODE 2; return 0
@@ -555,11 +587,43 @@ cmd_note() { # agent status [text | stdin]
   echo "noted"
 }
 
+rollout_finish() { # rollout run_branch base -> markdown lines (L2: optional push + PR)
+  local rollout="$1" rb="$2" base="$3" n stat
+  n="$(git rev-list --count "$base..$rb" 2>/dev/null || echo '?')"
+  stat="$(git diff --shortstat "$base...$rb" 2>/dev/null | sed 's/^ *//')"
+  if [[ "$rollout" == L1 ]]; then
+    echo "- Shadow run on branch \`$rb\`: $n commits (${stat:-no changes}). Your branch \`$base\` was not touched; the loop switches back to it now."
+    echo "- Inspect: \`git log $base..$rb\` and \`git diff $base...$rb\`. Delete it with \`git branch -D $rb\`."
+    echo "- When shadow runs keep being right, move to \`\"rollout\": \"L2\"\` (branch + PR) or L3."
+    return 0
+  fi
+  echo "- Work is on branch \`$rb\`: $n commits (${stat:-no changes}). Base: \`$base\` (not touched)."
+  if [[ "$(cfg '.rollout_push // false')" == true || "$(cfg '.rollout_pr // false')" == true ]]; then
+    if git push -q -u origin "$rb" >/dev/null 2>&1; then echo "- Pushed \`$rb\` to origin."
+    else echo "- WARNING: could not push \`$rb\` to origin."; fi
+  fi
+  if [[ "$(cfg '.rollout_pr // false')" == true ]]; then
+    if command -v gh >/dev/null 2>&1; then
+      local url
+      if url="$(gh pr create --base "$base" --head "$rb" --title "harness: $("$FL" stats)" --body "Opened by the wreck-it-ralph harness (rollout L2). See .harness/last-run.md and .harness/progress.md on the branch." 2>&1)"; then
+        echo "- Pull request: $url"; fire pr_opened "branch=$rb" "base=$base" "url=$url" >&2
+      else echo "- WARNING: gh pr create failed: $(echo "$url" | tail -n 1)"; fi
+    else echo "- rollout_pr is set but the GitHub CLI (gh) is not installed."; fi
+  fi
+  echo "- Review: \`git diff $base...$rb\`. Merge: \`git checkout $base && git merge $rb\`."
+}
+
 cmd_unlock() { rm -f "$LOCK"; echo "lock removed"; }
 
 cmd_summary() {
   local reason="${1:-finished}" code="${2:-0}" out="$HARNESS_DIR/last-run.md" start_head
+  # Codes 4-7 mean `begin --new-run` refused to start: the lock and state may belong to another,
+  # still running loop, so leave them (and last-run.md) alone.
+  case "$code" in 4|5|6|7) echo "Run not started: $reason"; fire run_refused "reason=$reason" "code=$code" >&2; return 0 ;; esac
   start_head="$(st_get start_head)"
+  local rollout rb base rollout_text=""
+  rollout="$(st_get rollout)"; rb="$(st_get run_branch)"; base="$(st_get base_branch)"
+  if [[ -n "$rb" ]]; then rollout_text="$(rollout_finish "$rollout" "$rb" "$base")"; fi
   {
     echo "# Harness run summary"
     echo
@@ -568,6 +632,7 @@ cmd_summary() {
     echo "- **Sessions this run:** $(st_get ran)"
     local t; read -r -a t <<<"$(ledger_totals)"
     echo "- **Spend this run:** \$${t[0]} | ${t[1]} tokens | $(run_minutes) min | ${t[2]} agent runs recorded"
+    if [[ -n "$rollout_text" ]]; then echo; echo "## Rollout $rollout"; echo; echo "$rollout_text"; fi
     echo
     echo "## Features"
     echo
@@ -592,7 +657,11 @@ cmd_summary() {
       echo "Session $((10#$num)):"; cat "$nf"
     done
   } > "$out"
-  fire run_ended "reason=$reason" "code=$code" "stats=$("$FL" stats)" >&2
+  fire run_ended "reason=$reason" "code=$code" "stats=$("$FL" stats)" "rollout=${rollout:-L3}" "branch=$rb" >&2
+  if [[ "$rollout" == L1 && -n "$base" && "$(git branch --show-current 2>/dev/null)" == "$rb" ]]; then
+    if [[ -z "$(git status --porcelain)" ]]; then git checkout -q "$base" 2>/dev/null || echo "harness: WARNING could not switch back to $base" >&2
+    else echo "harness: WARNING working tree not clean; staying on $rb (switch back with: git checkout $base)" >&2; fi
+  fi
   rm -f "$LOCK"
   echo
   sed 's/^#\+ //' "$out"

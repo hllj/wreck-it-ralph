@@ -23,7 +23,16 @@ Every agent runs in a **fresh context**, and all state lives on disk (`.harness/
 | `/wreck-it-ralph:run-headless [--max-sessions N] [--once]` | Unattended loop: separate `claude -p` processes in the background. |
 | `/wreck-it-ralph:status` | Features, next ready feature, open questions, pending proposals, runner state. |
 | `/wreck-it-ralph:cancel` | Stop after the current session. |
+| `/wreck-it-ralph:trigger cron\|launchd\|github\|loop` | Run without you: a cron line, a launchd agent, a GitHub Actions workflow (on a schedule or when CI fails), or a `/loop`. Defaults to rollout L1. |
+| `/wreck-it-ralph:intake [github] [--label ralph]` | New labelled issues become planner proposals for your approval. Issue text is untrusted. |
 | `/wreck-it-ralph:doctor` | Health check, including whether pipeline extensions (other plugins' agents, skills) and hooks resolve. |
+
+**Rollout levels** (config `rollout`, or `--rollout` on a run):
+- **L1 shadow:** works on a `harness/shadow-*` branch, switches back, and leaves a report.
+- **L2 assisted:** works on a `harness/run-*` branch, with optional push and PR (`rollout_push`, `rollout_pr`).
+- **L3 unattended:** commits on the current branch (the default).
+
+L1 and L2 never commit to your branch. `setup --notify` adds desktop notifications for `needs_human` and `run_ended`.
 
 **Working with other plugins:**
 - **Pipeline steps:** a step can `use:` `agent:<plugin>:<agent>`, `skill:<name>`, `command:/<plugin>:<cmd>` or `cmd:<shell>`.

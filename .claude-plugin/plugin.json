@@ -1,7 +1,7 @@
 {
   "name": "wreck-it-ralph",
-  "version": "3.2.0",
-  "description": "Loop-engineered long-running agent harness: a living feature backlog, fresh-context coder -> verify gate -> tester sessions, human escalation and run budgets. It composes with other plugins (their agents, skills and commands as pipeline steps), emits an event stream with hooks, and includes an in-session Ralph loop with a real verify command.",
+  "version": "3.3.0",
+  "description": "Loop-engineered long-running agent harness: a living feature backlog, fresh-context coder -> verify gate -> tester sessions, human escalation, run budgets, staged rollout (shadow branch -> branch + PR -> unattended), scheduled/CI triggers, issue intake and notifications. It composes with other plugins, and includes an in-session Ralph loop with a real verify command.",
   "author": {
     "name": "wreck-it-ralph contributors"
   },
