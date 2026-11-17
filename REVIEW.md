@@ -97,14 +97,14 @@ Fix: add `step.sh note <agent> <text>` so the orchestrator appends one line per 
 
 - **L1.** `init.sh` leaves the dev server running; there is no stop script or end-of-run cleanup.
 - **L2.** Agents have no `model` or `tools` frontmatter (they inherit everything). Reasonable now, but a cheaper model for the tester would be easy to offer.
-- **L3.** `tests/run-tests.sh` uses fixed `/tmp/hN.log` names (collision-prone), builds checks as eval strings, and has no coverage for `harness-status.sh`, the run commands' prompts, or the legacy stop hook.
-- **L4.** No CI and no shellcheck run (shellcheck is not installed here).
-- **L5.** `harness-cancel` only takes effect between sessions; the command text should say so.
-- **L6.** `begin --new-run` silently deletes a STOP flag, so a stale or just-set flag from another terminal is lost.
-- **L7.** `.step_state.json` is not validated; a corrupted file surfaces as raw jq errors.
-- **L8.** `fail` overwrites the previous note, so the history of attempts on a feature is lost (only progress.md keeps it).
+- **L3.** **FIXED in v3.0.0** (logs in a per-run `mktemp -d`; the stop hook now has tests). Original: `tests/run-tests.sh` uses fixed `/tmp/hN.log` names (collision-prone), builds checks as eval strings, and has no coverage for `harness-status.sh`, the run commands' prompts, or the legacy stop hook.
+- **L4.** **FIXED in v3.0.0** (GitHub Actions: tests on Linux and macOS, `shellcheck -S error`). Original: No CI and no shellcheck run (shellcheck is not installed here).
+- **L5.** **FIXED in v3.0.0** (the cancel command says the current agent is not interrupted). Original: `harness-cancel` only takes effect between sessions; the command text should say so.
+- **L6.** **FIXED in v3.0.0** (`begin --new-run` reports a cleared flag as `NOTE=`). Original: `begin --new-run` silently deletes a STOP flag, so a stale or just-set flag from another terminal is lost.
+- **L7.** **FIXED in v3.0.0** (a corrupted state file stops with a clear message). Original: `.step_state.json` is not validated; a corrupted file surfaces as raw jq errors.
+- **L8.** **FIXED in v3.0.0** (per-feature `attempts[]` history). Original: `fail` overwrites the previous note, so the history of attempts on a feature is lost (only progress.md keeps it).
 - **L9.** Windows is unsupported (bash and POSIX tools only); this is not documented.
-- **L10.** The inherited Ralph stop hook is untouched and still needs `perl`; its setup script still says it "cannot be stopped manually" even though harness cancel exists for the other mode.
+- **L10.** **FIXED in v3.0.0** (no `perl`; the start message mentions `/cancel-ralph`). Original: The inherited Ralph stop hook is untouched and still needs `perl`; its setup script still says it "cannot be stopped manually" even though harness cancel exists for the other mode.
 
 ## What held up (checked)
 

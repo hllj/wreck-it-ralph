@@ -1,30 +1,41 @@
 ---
-description: "Explain the wreck-it-ralph-loop plugin: the long-running harness and the in-session Ralph loop"
+description: "Explain the wreck-it-ralph plugin: the long-running harness with a living backlog, and the in-session Ralph loop"
 ---
 
-# wreck-it-ralph-loop Help
+# wreck-it-ralph Help
 
 Please explain the following to the user. The plugin has two tools: the **long-running harness** (recommended for building something over many sessions) and the original **in-session Ralph loop**.
 
 # Part 1: The long-running harness
 
-Based on Anthropic's "Effective harnesses for long-running agents": every agent runs in a **fresh context**, and all state lives on disk (`.harness/`) and in git.
+Every agent runs in a **fresh context**, and all state lives on disk (`.harness/`) and in git. Deterministic gate scripts own the rules, so the model does not have to remember them. Features are built **gradually**: the backlog can grow at any time through proposals you approve.
 
-**Flow:** setup/init -> loop (coder, then tester, each session) -> summary.
+**Flow:** init -> run (each session: coder -> verify gate -> tester) -> add more features any time -> run again.
 
 | Command | What it does |
 |---|---|
-| `/wreck-it-ralph-loop:harness-setup [--preset web\|cli\|none] [--check] [--refresh]` | Create or repair the `.harness/` scaffold: prerequisite check (git, jq, git identity), preset config, wrappers, `.gitignore` entries. Safe to re-run. |
-| `/wreck-it-ralph-loop:harness-init "<goal>" [--branch NAME] [--allow-dirty]` | Setup + the initializer agent writes `feature_list.json`, `init.sh`, `progress.md`, then the spec is locked and committed. Refuses on uncommitted changes in a git project. |
-| `/wreck-it-ralph-loop:harness-trust` | Review the repo-supplied config (permissions, commands, MCP servers, custom agents) and trust it. Required once per machine and after any change. |
-| `/wreck-it-ralph-loop:harness-run [--max-sessions N]` | Interactive loop: this session orchestrates fresh coder and tester subagents. |
-| `/wreck-it-ralph-loop:harness-run-headless [--max-sessions N] [--once]` | Unattended loop: separate `claude -p` processes in the background. |
-| `/wreck-it-ralph-loop:harness-status` | Features passing, next feature, runner state, recent progress. |
-| `/wreck-it-ralph-loop:harness-cancel` | Stop after the current session. |
+| `/wreck-it-ralph:setup [--preset web\|cli\|none] [--check] [--refresh]` | Create or repair the `.harness/` scaffold (prerequisites, preset config, wrappers, `.gitignore`). Safe to re-run. |
+| `/wreck-it-ralph:init "<goal>" [--branch NAME] [--allow-dirty]` | Runs setup, then the initializer writes `feature_list.json`, `init.sh` and `progress.md`. The spec is then locked and committed. |
+| `/wreck-it-ralph:add "<request>" [--approve]` | The planner turns a request into small, verifiable features (with `verify` commands and `depends_on`) as a proposal for you to approve. |
+| `/wreck-it-ralph:backlog [list\|approve P\|reject P\|answer F "..."\|drop F\|priority F N]` | Review proposals, answer questions the loop escalated, drop or reprioritize features. |
+| `/wreck-it-ralph:trust` | Review the repo-supplied config (permissions, commands, MCP servers, custom agents, verify commands) and trust it. |
+| `/wreck-it-ralph:run [--max-sessions N]` | Interactive loop: this session orchestrates fresh coder and tester subagents. |
+| `/wreck-it-ralph:run-headless [--max-sessions N] [--once]` | Unattended loop: separate `claude -p` processes in the background. |
+| `/wreck-it-ralph:status` | Features, next ready feature, open questions, pending proposals, runner state. |
+| `/wreck-it-ralph:cancel` | Stop after the current session. |
 
-**Key rules the gates enforce:** one feature per session; the coder may only *claim*, the tester alone marks features *passing* (an unverified pass is reset); the feature spec is locked; the tree is committed clean after every session; a loop stops when all features pass, at the session cap, or when stuck; only one loop runs per project.
+**Key rules the gates enforce:**
+- One feature per session, taken from the ready queue (not passing, not waiting on a human, dependencies passing, by priority).
+- The coder may only *claim*.
+- The gate runs each feature's `verify` commands itself; if one fails, the feature fails and the tester is skipped.
+- Only the tester marks a feature *passing*. An unverified pass is reset.
+- The spec is locked and changes only through approved proposals.
+- A feature that keeps failing, or that needs a decision, is escalated to `needs_human`, and the loop moves on.
+- The tree is committed clean after every session.
+- The loop stops when everything passes, at the session cap, when stuck, when only human-blocked work remains (code 8), or when dependencies can never pass (code 9).
+- Only one loop runs per project.
 
-Config lives in `.harness/config.json` (pipeline, limits, `final_verify_command`, `allow_dirty`). Details: README.md.
+Config lives in `.harness/config.json`: pipeline, limits, `verify_static`, `escalate_after_failures`, `final_verify_command`, `allow_dirty`. Details are in README.md.
 
 # Part 2: The in-session Ralph loop
 
@@ -53,14 +64,14 @@ The technique is described as "deterministically bad in an undeterministic world
 
 ## Available Commands
 
-### /wreck-it-ralph-loop:ralph-loop <PROMPT> [OPTIONS]
+### /wreck-it-ralph:ralph <PROMPT> [OPTIONS]
 
 Start a Ralph loop in your current session.
 
 **Usage:**
 ```
-/wreck-it-ralph-loop:ralph-loop "Refactor the cache layer" --max-iterations 20
-/wreck-it-ralph-loop:ralph-loop "Add tests" --completion-promise "TESTS COMPLETE"
+/wreck-it-ralph:ralph "Refactor the cache layer" --max-iterations 20
+/wreck-it-ralph:ralph "Add tests" --completion-promise "TESTS COMPLETE"
 ```
 
 **Options:**
@@ -77,13 +88,13 @@ Start a Ralph loop in your current session.
 
 ---
 
-### /wreck-it-ralph-loop:cancel-ralph
+### /wreck-it-ralph:cancel-ralph
 
 Cancel an active Ralph loop (removes the loop state file).
 
 **Usage:**
 ```
-/wreck-it-ralph-loop:cancel-ralph
+/wreck-it-ralph:cancel-ralph
 ```
 
 **How it works:**
@@ -118,7 +129,7 @@ The "loop" doesn't mean Claude talks to itself. It means:
 ### Interactive Bug Fix
 
 ```
-/wreck-it-ralph-loop:ralph-loop "Fix the token refresh logic in auth.ts. Output <promise>FIXED</promise> when all tests pass." --completion-promise "FIXED" --max-iterations 10
+/wreck-it-ralph:ralph "Fix the token refresh logic in auth.ts. Output <promise>FIXED</promise> when all tests pass." --completion-promise "FIXED" --max-iterations 10
 ```
 
 You'll see Ralph:

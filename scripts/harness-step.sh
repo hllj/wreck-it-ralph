@@ -16,10 +16,13 @@
 #                                Prints PASSING, STATS, COMMITS, STUCK, NEXT=continue|stop, REASON, CODE
 #   summary <reason> <code>      print + save the run summary (.harness/last-run.md)
 #   note <agent> ok|failed|skipped [text]   append one line to this session's notes (text may come from stdin)
-#   trust status|show|accept     review/record the risky repo-supplied config (see README "Trust")
+#   verify                       run gate-owned verify commands for claimed features (also run
+#                                automatically before the tester and at `end`); failures -> `fail`
+#   trust status|show|accept|accept-verify   review/record the risky repo-supplied config (README "Trust")
 #   unlock                       remove a stale loop lock (use only when no loop is running)
 #
 # begin --new-run stop codes: 4 dirty tree, 5 config not trusted, 6 git identity missing, 7 another loop running
+# begin/end stop codes:       2 max sessions, 3 stuck, 8 waiting for a human answer, 9 blocked by dependencies
 
 set -euo pipefail
 
@@ -32,12 +35,17 @@ STATE="$HARNESS_DIR/.step_state.json"
 SESSION_FILE="$HARNESS_DIR/session_count"
 # shellcheck source=harness-ignores.sh
 source "$PLUGIN_ROOT/scripts/harness-ignores.sh"
+# shellcheck source=harness-lib.sh
+source "$PLUGIN_ROOT/scripts/harness-lib.sh"
 
 die() { echo "harness-step: $*" >&2; exit 1; }
 command -v jq >/dev/null || die "jq is required"
-[[ -f "$CFG" ]] || die "$CFG missing - run /wreck-it-ralph-loop:harness-init first"
+[[ -f "$CFG" ]] || die "$CFG missing - run /wreck-it-ralph:init first"
 [[ "${1:-}" == "trust" || -f "$HARNESS_DIR/feature_list.json" ]] || die "feature_list.json missing - initializer has not run"
 git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
+if [[ -f "$HARNESS_DIR/.step_state.json" ]] && ! jq -e 'type == "object"' "$HARNESS_DIR/.step_state.json" >/dev/null 2>&1; then
+  die "$HARNESS_DIR/.step_state.json is corrupted; start a new run with: .harness/step.sh begin --new-run"
+fi
 
 cfg() { jq -r "$1" "$CFG"; }
 emit() { printf '%s=%s\n' "$1" "$2"; }
@@ -62,19 +70,25 @@ has_tester() { jq -e 'any(.pipeline[]?; .agent == "tester")' "$CFG" >/dev/null; 
 
 # ---------- trust: repo-supplied config can execute code, so it must be reviewed once per machine ----------
 TRUST_FILE="$HARNESS_DIR/.trusted"
-sha() { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi | cut -d' ' -f1; }
 mcp_path() { cfg '.mcp_config // ""'; }
 trust_material() { # everything that can run commands or steer agents with elevated rights
-  jq -S '{permission_mode, allowed_tools, final_verify_command, claude_bin, model, mcp_config}' "$CFG"
+  jq -S '{permission_mode, allowed_tools, final_verify_command, verify_static, claude_bin, model, mcp_config}' "$CFG"
   local m; m="$(mcp_path)"; if [[ -n "$m" && -f "$m" ]]; then echo "## mcp: $m"; cat "$m"; fi
   local f; for f in $(ls "$HARNESS_DIR"/agents/*.md 2>/dev/null | sort); do echo "## agent: $f"; cat "$f"; done
 }
 trust_hash() { trust_material | sha; }
-is_trusted() { [[ -f "$TRUST_FILE" && "$(cat "$TRUST_FILE")" == "$(trust_hash)" ]]; }
+# Per-feature verify commands are trusted separately (line 2 of .trusted): the initializer and approved
+# proposals add them, and both are reviewed by the user, so they can be accepted without re-trusting config.
+verify_hash() { local v; v="$("$FL" verify-cmds 2>/dev/null || true)"; if [[ -z "$v" ]]; then echo none; else printf '%s' "$v" | sha; fi; }
+config_trusted() { [[ -f "$TRUST_FILE" && "$(sed -n 1p "$TRUST_FILE")" == "$(trust_hash)" ]]; }
+is_trusted() { config_trusted && [[ "$(sed -n 2p "$TRUST_FILE" | sed 's/^$/none/')" == "$(verify_hash)" ]]; }
 
 cmd_trust() {
   case "${1:-status}" in
-    status) if is_trusted; then echo "trusted"; else echo "NOT trusted: run /wreck-it-ralph-loop:harness-trust to review" >&2; return 1; fi ;;
+    status) if is_trusted; then echo "trusted"; else echo "NOT trusted: run /wreck-it-ralph:trust to review" >&2; return 1; fi ;;
+    accept-verify) # extend trust to the current feature verify commands; only if the config itself is trusted
+      config_trusted || die "config is not trusted; review it with /wreck-it-ralph:trust"
+      { trust_hash; verify_hash; } > "$TRUST_FILE"; echo "verify commands trusted" ;;
     show)
       echo "These settings come from files in this repository and can run commands on your machine:"
       echo
@@ -83,26 +97,22 @@ cmd_trust() {
       echo "claude_bin:           $(cfg '.claude_bin // "claude"')"
       echo "model:                $(cfg '.model // ""')"
       echo "final_verify_command: $(cfg '.final_verify_command // ""')"
+      echo "verify_static:        $(cfg '.verify_static // ""')"
+      local v; v="$("$FL" verify-cmds 2>/dev/null || true)"
+      if [[ -n "$v" ]]; then echo; echo "Feature verify commands (feature_list.json):"; printf '%s\n' "$v" | sort -u | sed 's/^/  $ /'; fi
       local m; m="$(mcp_path)"
       if [[ -n "$m" && -f "$m" ]]; then echo; echo "MCP servers ($m):"; jq -r '.mcpServers | to_entries[] | "  \(.key): \(.value.command) \((.value.args // []) | join(" "))"' "$m" 2>/dev/null || cat "$m"; fi
       local f any=0; for f in "$HARNESS_DIR"/agents/*.md; do [[ -f "$f" ]] || continue; any=1; done
       if [[ $any -eq 1 ]]; then echo; echo "Custom agent prompts (.harness/agents/):"; ls "$HARNESS_DIR"/agents/*.md | sed 's/^/  /'; fi
       echo; if is_trusted; then echo "Status: trusted"; else echo "Status: NOT trusted yet"; fi ;;
-    accept) trust_hash > "$TRUST_FILE"; echo "trust recorded" ;;
-    *) die "usage: trust status|show|accept" ;;
+    accept) { trust_hash; verify_hash; } > "$TRUST_FILE"; echo "trust recorded" ;;
+    *) die "usage: trust status|show|accept|accept-verify" ;;
   esac
 }
 
 
 # ---------- single loop per project (heartbeat lock; headless runners also register their pid) ----------
-LOCK="$HARNESS_DIR/.lock"
-lock_live() {
-  [[ -f "$LOCK" ]] || return 1
-  local pid ts timeout
-  pid="$(jq -r '.pid // 0' "$LOCK" 2>/dev/null || echo 0)"; ts="$(jq -r '.ts // 0' "$LOCK" 2>/dev/null || echo 0)"
-  timeout="$(cfg '.lock_timeout_minutes // 120')"
-  if [[ "$pid" -gt 0 ]]; then kill -0 "$pid" 2>/dev/null; else (( $(date +%s) - ts < timeout * 60 )); fi
-}
+LOCK="$HARNESS_DIR/.lock"   # lock_live() comes from harness-lib.sh
 lock_write() { jq -n --argjson pid "$1" --argjson ts "$(date +%s)" '{pid:$pid, ts:$ts}' > "$LOCK"; }
 lock_touch() { [[ -f "$LOCK" ]] && lock_write "$(jq -r '.pid // 0' "$LOCK" 2>/dev/null || echo 0)" || true; }
 
@@ -135,6 +145,13 @@ final_verification() { # 0 if ok or not configured
   bash -c "$cmd" > "$HARNESS_DIR/sessions/final-verify.log" 2>&1
 }
 
+SNAP_LOCK="$HARNESS_DIR/.lock_snapshot.json"
+SNAP_PROPS="$HARNESS_DIR/.proposals_snapshot.json"
+LIST_LOCK="$HARNESS_DIR/.feature_list.lock.json"
+PROPS="$HARNESS_DIR/proposals.json"
+
+ids_json() { "$FL" ids --status "$1" | jq -R -s -c 'split("\n")|map(select(length>0))'; }
+
 cmd_begin() {
   local newrun=0 maxs="" owner=0
   while [[ $# -gt 0 ]]; do
@@ -150,7 +167,7 @@ cmd_begin() {
   mkdir -p "$HARNESS_DIR/sessions"
   if [[ $newrun -eq 1 || ! -f "$STATE" ]]; then
     if ! is_trusted; then
-      stop_decision "harness config is not trusted yet (it can run commands): review it with /wreck-it-ralph-loop:harness-trust, then start again" 5; return 0
+      stop_decision "harness config is not trusted yet (it can run commands): review it with /wreck-it-ralph:trust, then start again" 5; return 0
     fi
     if ! git_identity_ok; then
       stop_decision "git identity is not configured, so harness commits would fail: git config user.name \"Your Name\" && git config user.email you@example.com" 6; return 0
@@ -165,11 +182,11 @@ cmd_begin() {
       stop_decision "another harness loop is already running here (lock: $LOCK). If none is running, clear it with: .harness/step.sh unlock" 7; return 0
     fi
     lock_write "$owner"
-    rm -f "$HARNESS_DIR/STOP"
+    if [[ -f "$HARNESS_DIR/STOP" ]]; then rm -f "$HARNESS_DIR/STOP"; emit NOTE "cleared a STOP flag left from an earlier cancel (starting a new run overrides it)"; fi
     jq -n --argjson run "$(date +%s)" --arg head "$(git rev-parse HEAD 2>/dev/null || echo "")" \
           --argjson max "${maxs:-$(cfg '.max_sessions // 100')}" \
       --argjson s0 "$(cat "$SESSION_FILE" 2>/dev/null || echo 0)" \
-      '{run:$run, start_head:$head, ran:0, stuck:0, extra_task:"", max:$max, session:0, session_start:$s0}' > "$STATE"
+      '{run:$run, start_head:$head, ran:0, stuck:0, extra_task:"", max:$max, session:0, session_start:$s0, in_session:false}' > "$STATE"
     ensure_all_ignores "$HARNESS_DIR" >&2 || true
   fi
 
@@ -193,19 +210,70 @@ cmd_begin() {
     st_set_s extra_task "All features are marked passing but the final verification command failed (output in $HARNESS_DIR/sessions/final-verify.log). Command: $(cfg '.final_verify_command'). Fix the root cause."
   fi
 
+  local target; target="$("$FL" next | cut -f1 || true)"
+  if [[ -z "$target" && -z "$(claimed_ids)" ]] && ! "$FL" done; then
+    local waiting; waiting="$("$FL" ids --status needs_human | tr '\n' ' ' | sed 's/ *$//')"
+    if [[ -n "$waiting" ]]; then
+      stop_decision "waiting for a human: $waiting need an answer (see .harness/feature-list.sh questions; answer with /wreck-it-ralph:backlog answer <ID> \"...\")" 8; return 0
+    fi
+    stop_decision "blocked: no remaining feature has its dependencies passing ($("$FL" list --failing | cut -f1 | tr '\n' ' ' | sed 's/ *$//'))" 9; return 0
+  fi
+
   local n; n=$(( $(cat "$SESSION_FILE" 2>/dev/null || echo 0) + 1 ))
   echo "$n" > "$SESSION_FILE"
   st_set session "$n"; st_set ran $((ran + 1))
   st_set pass_before "$(passing)"
-  st_set pass_ids_before "$("$FL" list | awk -F'\t' '$2=="PASS"{print $1}' | jq -R -s -c 'split("\n")|map(select(length>0))')"
+  st_set human_before "$("$FL" count needs_human)"
+  st_set pass_ids_before "$(ids_json passing)"
   st_set verified_ids '[]'
+  st_set verify_done 0
+  st_set_s verify_failed ""
   st_set_s head_before "$(git rev-parse HEAD 2>/dev/null || echo none)"
-  local target; target="$("$FL" next | cut -f1 || true)"
   st_set_s target "$target"
+  # Snapshot the spec lock and proposals: an approval made during the session is undone at `end`.
+  if [[ -f "$LIST_LOCK" ]]; then cp "$LIST_LOCK" "$SNAP_LOCK"; else rm -f "$SNAP_LOCK"; fi
+  if [[ -f "$PROPS" ]]; then cp "$PROPS" "$SNAP_PROPS"; else rm -f "$SNAP_PROPS"; fi
+  st_set in_session true
   emit DECISION continue; emit SESSION "$n"; emit TARGET "${target:-none}"; emit STATS "$("$FL" stats)"
 }
 
 cmd_plan() { jq -r '.pipeline[] | [.agent, (.blocking // true), (.every // 1), (.when // "always")] | @tsv' "$CFG"; }
+
+# Gate-owned verification: commands the agents cannot fake. Runs once per session, before the
+# tester (or any step with when=claimed), and at `end` when no such step ran.
+cmd_verify() {
+  local n; n="$(st_get session)"
+  [[ "$(st_get verify_done)" == "1" ]] && return 0
+  st_set verify_done 1
+  local static id cmd failed ran log failed_ids=""
+  static="$(cfg '.verify_static // ""')"
+  for id in $(claimed_ids); do
+    failed=""; ran=0; log="$HARNESS_DIR/sessions/$(printf '%03d' "${n:-0}")-verify-$id.log"
+    while IFS= read -r cmd; do
+      [[ -z "$cmd" ]] && continue
+      ran=1; printf '$ %s\n' "$cmd" >> "$log"
+      if ! bash -c "$cmd" >> "$log" 2>&1 < /dev/null; then failed="$cmd"; break; fi
+    done < <( { [[ -n "$static" ]] && printf '%s\n' "$static"; "$FL" verify-cmds "$id"; } || true )
+    if [[ -n "$failed" ]]; then
+      "$FL" fail "$id" "verify command failed: $failed | $(tail -n 5 "$log" | tr '\n' ' ' | cut -c1-240) (log: $log)" >/dev/null
+      echo "harness: verify failed for $id: $failed" >&2
+      failed_ids="$failed_ids $id"
+    elif [[ $ran -eq 1 ]]; then
+      echo "harness: verify commands passed for $id" >&2
+    fi
+  done
+  st_set_s verify_failed "${failed_ids# }"
+  [[ -n "$failed_ids" ]] && emit VERIFY_FAILED "${failed_ids# }"
+  return 0
+}
+
+feature_context() { # id -> extra task text for a retry: last failure, human answer
+  [[ -z "$1" ]] && return 0
+  jq -r --arg id "$1" '.features[] | select(.id == $id)
+    | ([ (if (.answer // "") != "" then "Human answer for \(.id): \(.answer)." else empty end),
+         (if (.notes // "") != "" then "Previous attempt failed: \(.notes | .[0:400]). Do not repeat the approach that failed." else empty end) ] | join(" "))' \
+    "$HARNESS_DIR/feature_list.json"
+}
 
 cmd_task() {
   local agent="${1:?agent name required}" entry n every when target extra
@@ -213,10 +281,13 @@ cmd_task() {
   every="$(jq -r '.every // 1' <<<"$entry")"; when="$(jq -r '.when // "always"' <<<"$entry")"
   n="$(st_get session)"; target="$(st_get target)"; extra="$(st_get extra_task)"
   if (( n % every != 0 )); then echo "SKIP: runs every $every sessions"; return 0; fi
-  if [[ "$when" == "claimed" && -z "$(claimed_ids)" ]]; then echo "SKIP: nothing claimed"; return 0; fi
+  if [[ "$when" == "claimed" || "$agent" == "tester" ]]; then cmd_verify >/dev/null; fi
+  if [[ "$when" == "claimed" && -z "$(claimed_ids)" ]]; then echo "SKIP: nothing claimed$( [[ -n "$(st_get verify_failed)" ]] && echo " (verify commands failed: $(st_get verify_failed))")"; return 0; fi
   if [[ "$when" == "failing" && -z "$("$FL" next)" ]]; then echo "SKIP: nothing failing"; return 0; fi
   if [[ "$agent" == "tester" ]]; then st_set verified_ids "$("$FL" claimed | jq -R -s -c 'split("\n")|map(select(length>0))')"; fi
   local task="Harness session $n. Progress: $("$FL" stats). Target feature: ${target:-none}. Features awaiting verification: $(claimed_ids)."
+  local ctx; ctx="$(feature_context "$target")"
+  [[ -n "$ctx" && "$agent" != "tester" ]] && task="$task $ctx"
   [[ -n "$extra" ]] && task="$task $extra"
   echo "$task"
 }
@@ -233,7 +304,7 @@ cmd_spawn_info() {
   local name="${1:?agent name required}" def
   def="$(resolve_agent "$name")" || die "agent '$name' not found (looked in $HARNESS_DIR/agents, plugin agents/, templates/agents/)"
   if [[ "$def" == "$PLUGIN_ROOT/agents/$name.md" ]]; then
-    echo "TYPE=wreck-it-ralph-loop:$name"
+    echo "TYPE=wreck-it-ralph:$name"
   else
     echo "TYPE=general-purpose"
     echo "---PROMPT---"
@@ -241,32 +312,73 @@ cmd_spawn_info() {
   fi
 }
 
+# Undo backlog approvals made while the session ran (only humans approve, and only between sessions).
+check_backlog_snapshot() {
+  [[ -f "$SNAP_LOCK" ]] || return 0
+  if ! cmp -s "$SNAP_LOCK" "$LIST_LOCK" 2>/dev/null; then
+    echo "harness: the feature spec lock changed during the session (approvals are human-only, between sessions); undoing it" >&2
+    cp "$SNAP_LOCK" "$LIST_LOCK"
+    # Keep proposals filed during the session (agents may propose), but put any approval back to pending.
+    if [[ -f "$PROPS" ]]; then
+      local tmp="$PROPS.tmp.$$" snap='{"proposals":[]}'
+      [[ -f "$SNAP_PROPS" ]] && snap="$(cat "$SNAP_PROPS")"
+      jq --argjson snap "$snap" '
+        ($snap.proposals | map({key: .id, value: .status}) | from_entries) as $was
+        | .proposals |= map(if .status == "approved" and ($was[.id] // "pending") != "approved"
+                            then .status = "pending" | del(.decided_at) else . end)' "$PROPS" > "$tmp" && mv "$tmp" "$PROPS"
+    fi
+    "$FL" restore >&2
+    REVERTED=1
+  fi
+}
+
 cmd_end() {
   local n limit stuck before after
   n="$(st_get session)"; limit="$(cfg '.stuck_limit // 3')"; stuck="$(st_get stuck)"
-  if ! has_tester; then # no verifier in the pipeline: coder claims are accepted as passes
+  REVERTED=0
+  check_backlog_snapshot
+  cmd_verify >/dev/null
+  if ! has_tester; then # no tester in the pipeline: verified claims are accepted as passes
     local id; for id in $(claimed_ids); do "$FL" pass "$id" >/dev/null; echo "harness: (no tester in pipeline) accepted claim $id" >&2; done
   fi
   local unauth=""
   if has_tester; then # only features claimed when the tester started may become passing
     local id
     for id in $(jq -r -n --argjson before "$(st_get_json pass_ids_before)" --argjson ok "$(st_get_json verified_ids)" \
-          --slurpfile fl "$HARNESS_DIR/feature_list.json" '[$fl[0].features[] | select(.passes == true) | .id] - $before - $ok | .[]'); do
+          --argjson now "$(ids_json passing)" '$now - $before - $ok | .[]'); do
       "$FL" fail "$id" "marked passing without tester verification (must be claimed, then passed by the tester); reset" >/dev/null
       echo "harness: WARNING $id was marked passing without tester verification; reset to failing" >&2
       unauth="$unauth $id"
     done
   fi
+  # Escalate features that keep failing so the loop can move on (skip-and-continue).
+  local esc escalated="" fid fails
+  esc="$(cfg '.escalate_after_failures // 3')"
+  if [[ "$esc" =~ ^[0-9]+$ && "$esc" -gt 0 ]]; then
+    for fid in $("$FL" ids --status failing); do
+      fails="$("$FL" failures "$fid")"
+      if [[ "$fails" -ge "$esc" ]]; then
+        "$FL" ask "$fid" "failed $fails attempts in a row; last note: $(jq -r --arg id "$fid" '.features[] | select(.id == $id) | .notes // "" | .[0:200]' "$HARNESS_DIR/feature_list.json"). Clarify the requirement, give a hint, or drop it." >/dev/null
+        echo "harness: $fid failed $fails times; escalated to a human (needs_human)" >&2
+        escalated="$escalated $fid"
+      fi
+    done
+  fi
   check_spec_lock
   ensure_clean_state "$n"
   lock_touch
+  st_set in_session false
   before="$(st_get pass_before)"; after="$(passing)"
-  if [[ "$after" -le "$before" ]]; then stuck=$((stuck + 1)); else stuck=0; fi
+  # Progress = more features passing, or a feature handed to a human (the loop can move on).
+  if [[ "$after" -gt "$before" || "$("$FL" count needs_human)" -gt "$(st_get human_before)" ]]; then stuck=0; else stuck=$((stuck + 1)); fi
   st_set stuck "$stuck"; st_set_s extra_task ""
   emit PASSING "$after"; emit STATS "$("$FL" stats)"
   emit COMMITS "$(git rev-list --count "$(st_get head_before)"..HEAD 2>/dev/null || echo '?')"
   emit STUCK "$stuck/$limit"
   [[ -n "$unauth" ]] && emit UNVERIFIED_RESET "${unauth# }"
+  [[ -n "$(st_get verify_failed)" ]] && emit VERIFY_FAILED "$(st_get verify_failed)"
+  [[ -n "$escalated" ]] && emit NEEDS_HUMAN "${escalated# }"
+  [[ $REVERTED -eq 1 ]] && emit WARN "a backlog approval made during the session was undone; approve between sessions"
   [[ $COMMIT_FAILED -eq 1 ]] && emit WARN "a git commit failed; check git user.name/user.email"
   if [[ "$stuck" -ge "$limit" ]]; then
     emit NEXT stop; emit REASON "stuck: no progress for $limit sessions"; emit CODE 3
@@ -303,7 +415,11 @@ cmd_summary() {
     echo
     echo "| id | status | description | notes |"
     echo "|---|---|---|---|"
-    jq -r '.features[] | "| \(.id) | \(if .passes then "PASS" elif .claimed then "CLAIMED" else "FAIL" end) | \(.description | .[0:70]) | \(.notes // "" | .[0:80]) |"' "$HARNESS_DIR/feature_list.json"
+    "$FL" table
+    local q; q="$("$FL" questions)"
+    if [[ -n "$q" ]]; then echo; echo "## Waiting for a human"; echo; printf '%s\n' "$q" | sed 's/\t/: /; s/^/- /'; fi
+    local pend; pend="$(jq -r '.proposals[]? | select(.status == "pending") | "- \(.id): \(.reason)"' "$PROPS" 2>/dev/null || true)"
+    if [[ -n "$pend" ]]; then echo; echo "## Backlog proposals awaiting approval"; echo; echo "$pend"; fi
     if [[ -n "$start_head" ]]; then
       echo
       echo "## Commits this run"
@@ -332,9 +448,10 @@ case "$cmd" in
   task)        cmd_task "$@" ;;
   spawn-info)  cmd_spawn_info "$@" ;;
   end)         cmd_end ;;
+  verify)      cmd_verify ;;
   summary)     cmd_summary "$@" ;;
   trust)       cmd_trust "$@" ;;
   note)        cmd_note "$@" ;;
   unlock)      cmd_unlock ;;
-  *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
+  *) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
 esac

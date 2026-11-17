@@ -3,13 +3,13 @@
 #
 # Use this for unattended runs (overnight, CI, away from the keyboard). Each agent is a
 # separate `claude -p` process with a brand-new context and needs a valid `claude` login.
-# For interactive use prefer /wreck-it-ralph-loop:harness-run (Claude Code subagents).
+# For interactive use prefer /wreck-it-ralph:run (Claude Code subagents).
 #
 # All gates (limits, stuck detection, spec lock, clean tree, summary) live in
 # harness-step.sh and are shared with the interactive mode.
 #
 # Usage: .harness/run.sh [--max-sessions N] [--once]
-# Stop:  touch .harness/STOP  (or /wreck-it-ralph-loop:harness-cancel)
+# Stop:  touch .harness/STOP  (or /wreck-it-ralph:cancel)
 
 set -euo pipefail
 
@@ -23,7 +23,7 @@ log() { echo "[$(date +%H:%M:%S)] $*"; }
 die() { echo "❌ $*" >&2; exit 1; }
 
 command -v jq >/dev/null || die "jq is required"
-[[ -f "$CFG" ]] || die "$CFG missing - run /wreck-it-ralph-loop:harness-init first"
+[[ -f "$CFG" ]] || die "$CFG missing - run /wreck-it-ralph:init first"
 [[ -f "$HARNESS_DIR/feature_list.json" ]] || die "feature_list.json missing - initializer has not run"
 git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
 
@@ -121,6 +121,9 @@ while true; do
   END="$("$STEP" end)"
   log "── session $n done | $(kv STATS "$END") | commits: $(kv COMMITS "$END") | no-progress streak: $(kv STUCK "$END")"
   [[ $session_failed -eq 1 ]] && log "   (a blocking agent failed this session)"
+  [[ -n "$(kv VERIFY_FAILED "$END")" ]] && log "   verify commands failed: $(kv VERIFY_FAILED "$END")"
+  [[ -n "$(kv NEEDS_HUMAN "$END")" ]] && log "   escalated to a human: $(kv NEEDS_HUMAN "$END") (answer with /wreck-it-ralph:backlog answer <ID> \"...\")"
+  [[ -n "$(kv WARN "$END")" ]] && log "   ⚠️  $(kv WARN "$END")"
   if [[ "$(kv NEXT "$END")" == "stop" ]]; then
     log "🛑 $(kv REASON "$END"). Review $HARNESS_DIR/progress.md and feature notes."
     stop_run "$(kv REASON "$END")" "$(kv CODE "$END")"

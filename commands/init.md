@@ -16,10 +16,10 @@ Do these steps in order:
    `"${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh" --for-init` plus only the setup options the user gave (verbatim).
    If it fails (already initialized, missing tools, or uncommitted changes in a git project), tell the user and stop. For uncommitted changes suggest committing/stashing, or re-running with `--branch <name>` / `--allow-dirty`.
 
-2. Launch the **initializer** as a fresh-context subagent with the Agent tool (`subagent_type: "wreck-it-ralph-loop:initializer"`). Pass it the user's goal verbatim plus the current working directory. Wait for it to finish. Do not implement any feature yourself.
+2. Launch the **initializer** as a fresh-context subagent with the Agent tool (`subagent_type: "wreck-it-ralph:initializer"`). Pass it the user's goal verbatim plus the current working directory. Wait for it to finish. Do not implement any feature yourself.
 
 3. Finalize (validates the feature list, checks init.sh, locks the spec, makes the first commit):
    `"${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh" --finalize`
    If validation fails, send the error back to a new initializer subagent to fix, then finalize again.
 
-4. Report to the user: number of features, how to run, and the next step - start the loop with `/wreck-it-ralph-loop:harness-run` (interactive: fresh-context subagents in this session), or for unattended runs `/wreck-it-ralph-loop:harness-run-headless` / `.harness/run.sh` in a terminal. Mention `.harness/config.json` (pipeline, limits) and, for the web preset, that the Playwright MCP must be available in the session (start Claude Code with `--mcp-config .harness/mcp.json`).
+4. Report to the user: number of features, how to run, and the next step - start the loop with `/wreck-it-ralph:run` (interactive: fresh-context subagents in this session), or for unattended runs `/wreck-it-ralph:run-headless` / `.harness/run.sh` in a terminal. Mention that features can be added at any time with `/wreck-it-ralph:add "<request>"` and managed with `/wreck-it-ralph:backlog`. Mention `.harness/config.json` (pipeline, limits, `verify_static`, `escalate_after_failures`) and, for the web preset, that the Playwright MCP must be available in the session (start Claude Code with `--mcp-config .harness/mcp.json`).

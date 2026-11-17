@@ -9,7 +9,7 @@ allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh:*)"]
 User arguments: $ARGUMENTS
 
 Run the setup script with the Bash tool: `"${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh"` followed by ONLY these options if the user gave them (copy them verbatim; ignore anything else and never pass free text through):
-`--preset web|cli|none`, `--max-sessions <number>`, `--no-browser`, `--check`, `--refresh`, `--force`. (Do not pass `--trust` on the user's behalf; trusting goes through `/wreck-it-ralph-loop:harness-trust`.)
+`--preset web|cli|none`, `--max-sessions <number>`, `--no-browser`, `--check`, `--refresh`, `--force`. (Do not pass `--trust` on the user's behalf; trusting goes through `/wreck-it-ralph:trust`.)
 
 What it does (safe to re-run; it merges and never overwrites config, mcp.json, progress.md unless `--force`):
 - checks prerequisites (git, jq required; claude, npx optional),
@@ -19,4 +19,4 @@ What it does (safe to re-run; it merges and never overwrites config, mcp.json, p
 - merges ignore entries into `.harness/.gitignore` and the project `.gitignore` (`.playwright-mcp/`, `node_modules/`, `.env*`, keys, logs, ...),
 - initializes git if needed.
 
-Afterwards summarize what was created or kept in a few lines. Tell the user the next step is `/wreck-it-ralph-loop:harness-init "<goal>"`, and that they can edit `.harness/config.json` (pipeline, limits, `final_verify_command`) before running the loop.
+Afterwards summarize what was created or kept in a few lines. Tell the user the next step is `/wreck-it-ralph:init "<goal>"`, and that they can edit `.harness/config.json` (pipeline, limits, `final_verify_command`) before running the loop.

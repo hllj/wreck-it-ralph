@@ -41,7 +41,7 @@ if [[ ! "$ITERATION" =~ ^[0-9]+$ ]]; then
   echo "   Problem: 'iteration' field is not a valid number (got: '$ITERATION')" >&2
   echo "" >&2
   echo "   This usually means the state file was manually edited or corrupted." >&2
-  echo "   Ralph loop is stopping. Run /ralph-loop again to start fresh." >&2
+  echo "   Ralph loop is stopping. Run /wreck-it-ralph:ralph again to start fresh." >&2
   rm "$RALPH_STATE_FILE"
   exit 0
 fi
@@ -52,7 +52,7 @@ if [[ ! "$MAX_ITERATIONS" =~ ^[0-9]+$ ]]; then
   echo "   Problem: 'max_iterations' field is not a valid number (got: '$MAX_ITERATIONS')" >&2
   echo "" >&2
   echo "   This usually means the state file was manually edited or corrupted." >&2
-  echo "   Ralph loop is stopping. Run /ralph-loop again to start fresh." >&2
+  echo "   Ralph loop is stopping. Run /wreck-it-ralph:ralph again to start fresh." >&2
   rm "$RALPH_STATE_FILE"
   exit 0
 fi
@@ -127,10 +127,9 @@ fi
 
 # Check for completion promise (only if set)
 if [[ "$COMPLETION_PROMISE" != "null" ]] && [[ -n "$COMPLETION_PROMISE" ]]; then
-  # Extract text from <promise> tags using Perl for multiline support
-  # -0777 slurps entire input, s flag makes . match newlines
-  # .*? is non-greedy (takes FIRST tag), whitespace normalized
-  PROMISE_TEXT=$(echo "$LAST_OUTPUT" | perl -0777 -pe 's/.*?<promise>(.*?)<\/promise>.*/$1/s; s/^\s+|\s+$//g; s/\s+/ /g' 2>/dev/null || echo "")
+  # Extract the FIRST <promise>...</promise> (multi-line, non-greedy) and normalize whitespace.
+  # jq's regex engine handles this (no extra interpreter needed).
+  PROMISE_TEXT=$(printf '%s' "$LAST_OUTPUT" | jq -Rrs '(capture("<promise>(?<p>[\\s\\S]*?)</promise>") | .p) // "" | gsub("^\\s+|\\s+$"; "") | gsub("\\s+"; " ")' 2>/dev/null || echo "")
 
   # Use = for literal string comparison (not pattern matching)
   # == in [[ ]] does glob pattern matching which breaks with *, ?, [ characters
@@ -158,7 +157,7 @@ if [[ -z "$PROMPT_TEXT" ]]; then
   echo "     • State file was manually edited" >&2
   echo "     • File was corrupted during writing" >&2
   echo "" >&2
-  echo "   Ralph loop is stopping. Run /ralph-loop again to start fresh." >&2
+  echo "   Ralph loop is stopping. Run /wreck-it-ralph:ralph again to start fresh." >&2
   rm "$RALPH_STATE_FILE"
   exit 0
 fi

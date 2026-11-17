@@ -1,6 +1,13 @@
 # wreck-it-ralph v3: analysis and improvement plan
 
-Status: proposal. Date: 2026-11-17. Applies to the plugin currently published as `wreck-it-ralph-loop` v2.1.0.
+Status: **Phase 0 and Phase 1 are implemented in v3.0.0** (2026-11-17). Phases 2 to 5 are still proposals. The plan started from `wreck-it-ralph-loop` v2.1.0.
+
+Implementation notes (where v3.0.0 differs from the plan below):
+- State stays in `.harness/` and the config stays `.harness/config.json` (now with `"version": 3`). There is no `.ralph/` directory and no `loop.json` yet. Moving the directory brought churn for existing users and no benefit, so it is deferred until the Phase 3 loop spec needs a new file.
+- Verification ladder: V1/V2 are implemented as config `verify_static` plus per-feature `verify` commands. They are run by the gate before the tester (or before acceptance when there is no tester). V3/V4 remain the tester. V5 (human) is the `needs_human` status.
+- `blocked` is not a stored status. A feature with unmet `depends_on` is simply not ready, and stop code 9 reports when nothing can ever become ready.
+- Retry context: each retry of a failed feature gets the last failure note and any human answer, and is told not to repeat the failed approach. That part of Phase 2's inner loop shipped early. `escalate_after_failures` (default 3) bounds the retries.
+- Trust now has two parts: the config hash and the verify-command hash. Commands written by the initializer or approved in a proposal are trusted automatically, while repo-supplied ones need `/trust`.
 
 ## 1. The three source ideas
 

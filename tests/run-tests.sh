@@ -3,6 +3,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PASS=0; FAIL=0
+LOGD="$(mktemp -d)"   # per-run log dir (no fixed /tmp names)
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
 bad()  { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
 out_has() { local pat="$1" o; shift; o="$("$@" 2>&1)"; grep -q -- "$pat" <<<"$o"; } # avoids SIGPIPE from grep -q under pipefail
@@ -39,36 +40,36 @@ check "done true when all pass"  '$FL done'
 
 echo "harness-run.sh"
 new_project 3
-check "runner completes coder->tester" '.harness/run.sh >/tmp/h1.log 2>&1; [[ $? -eq 0 ]] && .harness/feature-list.sh done'
+check "runner completes coder->tester" '.harness/run.sh >$LOGD/h1.log 2>&1; [[ $? -eq 0 ]] && .harness/feature-list.sh done'
 check "one commit per feature"   '[[ "$(git log --oneline | grep -c "feat: F")" == 3 ]]'
 check "fresh session logs exist" '[[ -f .harness/sessions/001-coder.log && -f .harness/sessions/001-tester.log ]]'
 check "pid file removed"         '[[ ! -f .harness/runner.pid ]]'
 
 new_project 2
-check "stuck detection exits 3"  'FAKE_MODE=idle .harness/run.sh >/tmp/h2.log 2>&1; [[ $? -eq 3 ]]'
+check "stuck detection exits 3"  'FAKE_MODE=idle .harness/run.sh >$LOGD/h2.log 2>&1; [[ $? -eq 3 ]]'
 
 new_project 2
-check "tampered spec is restored" 'FAKE_MODE=tamper .harness/run.sh --once >/tmp/h3.log 2>&1; .harness/feature-list.sh verify-lock'
+check "tampered spec is restored" 'FAKE_MODE=tamper .harness/run.sh --once >$LOGD/h3.log 2>&1; .harness/feature-list.sh verify-lock'
 
 new_project 2
-check "dirty tree auto-committed" 'FAKE_MODE=dirty .harness/run.sh --once >/tmp/h4.log 2>&1; [[ -z "$(git status --porcelain)" ]]'
+check "dirty tree auto-committed" 'FAKE_MODE=dirty .harness/run.sh --once >$LOGD/h4.log 2>&1; [[ -z "$(git status --porcelain)" ]]'
 
 new_project 2
 jq '.pipeline=[{agent:"coder"}]' .harness/config.json > .harness/c && mv .harness/c .harness/config.json && .harness/step.sh trust accept >/dev/null
-check "no tester: claims accepted" '.harness/run.sh >/tmp/h5.log 2>&1; .harness/feature-list.sh done'
+check "no tester: claims accepted" '.harness/run.sh >$LOGD/h5.log 2>&1; .harness/feature-list.sh done'
 
 new_project 1
 jq '.final_verify_command="false"' .harness/config.json > .harness/c && mv .harness/c .harness/config.json && .harness/step.sh trust accept >/dev/null
-check "failing final verify blocks completion" '.harness/run.sh --max-sessions 4 >/tmp/h6.log 2>&1; [[ $? -ne 0 ]]'
+check "failing final verify blocks completion" '.harness/run.sh --max-sessions 4 >$LOGD/h6.log 2>&1; [[ $? -ne 0 ]]'
 
 new_project 3
-check "STOP flag exits after current session" 'FAKE_MODE=stop .harness/run.sh >/tmp/h7.log 2>&1; [[ $? -eq 0 ]] && ! .harness/feature-list.sh done && grep -q "STOP flag" /tmp/h7.log'
+check "STOP flag exits after current session" 'FAKE_MODE=stop .harness/run.sh >$LOGD/h7.log 2>&1; [[ $? -eq 0 ]] && ! .harness/feature-list.sh done && grep -q "STOP flag" $LOGD/h7.log'
 
 new_project 2
-.harness/run.sh >/tmp/h8.log 2>&1
+.harness/run.sh >$LOGD/h8.log 2>&1
 check "summary file written"          'grep -q "Stop reason:\*\* complete" .harness/last-run.md'
 check "summary lists features + commits" 'grep -q "| F002 | PASS" .harness/last-run.md && grep -q "feat: F001" .harness/last-run.md'
-check "summary printed to console"    'grep -q "Commits this run" /tmp/h8.log'
+check "summary printed to console"    'grep -q "Commits this run" $LOGD/h8.log'
 check "agent log holds output"        'grep -q "fake claude ok" .harness/sessions/001-coder.log'
 check "runner artifacts not in git"   '[[ -z "$(git status --porcelain)" ]]'
 
@@ -85,7 +86,7 @@ check "begin continues with session 1 + target" 'grep -q "^DECISION=continue" <<
 check "plan lists coder then tester" '[[ "$($S plan | cut -f1 | tr "\n" " ")" == "coder tester " ]]'
 check "task for coder names the target" 'out_has "Target feature: F001" $S task coder'
 check "tester task skipped when nothing claimed" 'out_has "^SKIP: nothing claimed" $S task tester'
-check "spawn-info: plugin agent type" 'out_has "^TYPE=wreck-it-ralph-loop:coder$" $S spawn-info coder'
+check "spawn-info: plugin agent type" 'out_has "^TYPE=wreck-it-ralph:coder$" $S spawn-info coder'
 mkdir -p .harness/agents; printf -- '---\nname: reviewer\ndescription: r\n---\nREVIEW BODY\n' > .harness/agents/reviewer.md; $S trust accept >/dev/null
 check "spawn-info: custom agent carries prompt" 'out_has "^TYPE=general-purpose$" $S spawn-info reviewer && out_has "REVIEW BODY" $S spawn-info reviewer'
 check "spawn-info: unknown agent errors" '! $S spawn-info nope >/dev/null 2>&1'
@@ -116,7 +117,7 @@ SETUP="$ROOT/scripts/harness-setup.sh"
 S=.harness/step.sh
 P="$(mktemp -d)"; cd "$P"
 check "--check passes with tools present"   '$SETUP --check >/dev/null'
-$SETUP --preset web --max-sessions 7 >/tmp/s1.log 2>&1
+$SETUP --preset web --max-sessions 7 >$LOGD/s1.log 2>&1
 check "web preset: playwright mcp enabled"  '[[ "$(jq -r .mcp_config .harness/config.json)" == .harness/mcp.json && -f .harness/mcp.json ]]'
 check "max-sessions applied"                '[[ "$(jq .max_sessions .harness/config.json)" == 7 ]]'
 check "pipeline coder -> tester"            '[[ "$(jq -r "[.pipeline[].agent]|join(\",\")" .harness/config.json)" == coder,tester ]]'
@@ -127,7 +128,7 @@ check ".harness gitignore ignores state"    'grep -qxF ".step_state.json" .harne
 check ".harness README written"             '[[ -f .harness/README.md ]]'
 echo '{"keep":true}' > .harness/progress.keep; jq '.max_sessions=55' .harness/config.json > .harness/c && mv .harness/c .harness/config.json && .harness/step.sh trust accept >/dev/null
 echo "my notes" >> .harness/progress.md; printf 'custom\n' >> .gitignore
-$SETUP >/tmp/s2.log 2>&1
+$SETUP >$LOGD/s2.log 2>&1
 check "re-run keeps config and progress"    '[[ "$(jq .max_sessions .harness/config.json)" == 55 ]] && grep -q "my notes" .harness/progress.md'
 check "re-run keeps custom gitignore lines" 'grep -qxF custom .gitignore'
 check "re-run does not duplicate ignores"   '[[ "$(grep -cxF ".playwright-mcp/" .gitignore)" == 1 ]]'
@@ -153,12 +154,12 @@ check "bad preset rejected"                 '! $SETUP --preset bogus >/dev/null 
 echo "safety: dirty tree, wrappers, trust"
 git_repo() { P="$(mktemp -d)"; cd "$P"; git init -q; git config user.email t@t; git config user.name t; echo base > base.txt; git add -A; git commit -qm base; }
 git_repo; echo wip > mine.txt
-check "init refuses uncommitted user changes"  '! $SETUP --for-init >/tmp/d1.log 2>&1 && grep -q "mine.txt" /tmp/d1.log'
+check "init refuses uncommitted user changes"  '! $SETUP --for-init >$LOGD/d1.log 2>&1 && grep -q "mine.txt" $LOGD/d1.log'
 check "--allow-dirty overrides"                '$SETUP --for-init --allow-dirty >/dev/null 2>&1'
 git_repo
 check "--branch switches to a new branch"      '$SETUP --for-init --branch harness/trial >/dev/null 2>&1 && [[ "$(git branch --show-current)" == harness/trial ]]'
 P="$(mktemp -d)"; cd "$P"; git init -q; echo hi > existing.txt
-check "no-commit repo allowed with a note"     '$SETUP --for-init >/tmp/d2.log 2>&1 && grep -q "no commits yet" /tmp/d2.log'
+check "no-commit repo allowed with a note"     '$SETUP --for-init >$LOGD/d2.log 2>&1 && grep -q "no commits yet" $LOGD/d2.log'
 
 git_repo; $SETUP --preset cli >/dev/null 2>&1
 check "scaffold then init is not blocked by our own .gitignore" '$SETUP --for-init >/dev/null 2>&1'
@@ -176,9 +177,9 @@ check "allow_dirty config lets it start"             '$S unlock >/dev/null; out_
 SRC="$(mktemp -d)"; cp -R "$ROOT/scripts" "$ROOT/templates" "$ROOT/agents" "$SRC/"
 P="$(mktemp -d)"; cd "$P"; git init -q; "$SRC/scripts/harness-setup.sh" --preset cli >/dev/null 2>&1
 rm -rf "$SRC"
-check "stale wrapper fails with a helpful message" '! .harness/step.sh trust status >/tmp/w1.log 2>&1; grep -q "harness-setup --refresh" /tmp/w1.log; [[ "$(.harness/step.sh trust status >/dev/null 2>&1; echo $?)" == 127 ]]'
+check "stale wrapper fails with a helpful message" '! .harness/step.sh trust status >$LOGD/w1.log 2>&1; grep -q "setup --refresh" $LOGD/w1.log; [[ "$(.harness/step.sh trust status >/dev/null 2>&1; echo $?)" == 127 ]]'
 check "CLAUDE_PLUGIN_ROOT rescues a stale wrapper" 'CLAUDE_PLUGIN_ROOT="$ROOT" .harness/step.sh trust status >/dev/null 2>&1'
-FH="$(mktemp -d)"; mkdir -p "$FH/.claude/plugins/cache/mkt/wreck-it-ralph-loop/2.0.0"; cp -R "$ROOT/scripts" "$FH/.claude/plugins/cache/mkt/wreck-it-ralph-loop/2.0.0/"
+FH="$(mktemp -d)"; mkdir -p "$FH/.claude/plugins/cache/mkt/wreck-it-ralph/2.0.0"; cp -R "$ROOT/scripts" "$FH/.claude/plugins/cache/mkt/wreck-it-ralph/2.0.0/"
 check "installed-plugin cache fallback works"      'HOME="$FH" .harness/step.sh trust status >/dev/null 2>&1'
 check "--refresh rewrites wrappers"                '$SETUP --refresh >/dev/null && .harness/step.sh trust status >/dev/null 2>&1'
 
@@ -202,8 +203,8 @@ check "new custom agent revokes trust"         '! $S trust status >/dev/null 2>&
 check "default headless mode is acceptEdits"   '[[ "$(jq -r .permission_mode "$ROOT/templates/config.json")" == acceptEdits ]]'
 new_project 1
 jq '.permission_mode="bypassPermissions"' .harness/config.json > .harness/c && mv .harness/c .harness/config.json && .harness/step.sh trust accept >/dev/null
-.harness/run.sh --once >/tmp/b1.log 2>&1
-check "runner warns on bypassPermissions"      'grep -q "bypassPermissions" /tmp/b1.log'
+.harness/run.sh --once >$LOGD/b1.log 2>&1
+check "runner warns on bypassPermissions"      'grep -q "bypassPermissions" $LOGD/b1.log'
 check "non-numeric --max-sessions rejected"    '! $S begin --new-run --max-sessions abc >/dev/null 2>&1'
 
 echo "medium fixes: independence, identity, lock, notes, ignores"
@@ -223,14 +224,14 @@ out="$($S end 2>&1)"
 check "claimed+tester pass is kept"         '[[ "$(.harness/feature-list.sh list | awk -F"\t" "\$1==\"F002\"{print \$2}")" == PASS ]]'
 check "unclaimed pass alongside is reset"   'grep -q "^UNVERIFIED_RESET=F003$" <<<"$out" && [[ "$(.harness/feature-list.sh list | awk -F"\t" "\$1==\"F003\"{print \$2}")" == FAIL ]]'
 new_project 2
-FAKE_MODE=selfpass .harness/run.sh --once >/tmp/m1.log 2>&1
-check "runner: coder self-pass does not count" '! .harness/feature-list.sh done && grep -q "without tester verification" /tmp/m1.log'
+FAKE_MODE=selfpass .harness/run.sh --once >$LOGD/m1.log 2>&1
+check "runner: coder self-pass does not count" '! .harness/feature-list.sh done && grep -q "without tester verification" $LOGD/m1.log'
 
 # M2: git identity and commit failures
 new_project 1
 git config --unset user.email; git config --unset user.name
 check "begin stops without git identity (code 6)" 'out_has "^CODE=6$" "${NOID[@]}" $S begin --new-run'
-check "setup --check flags missing identity"      '! "${NOID[@]}" $SETUP --check >/tmp/m2.log 2>&1 && grep -q "git identity" /tmp/m2.log'
+check "setup --check flags missing identity"      '! "${NOID[@]}" $SETUP --check >$LOGD/m2.log 2>&1 && grep -q "git identity" $LOGD/m2.log'
 git config user.email t@t; git config user.name t
 $S begin --new-run >/dev/null; echo stray > stray.txt; git config --unset user.email; git config --unset user.name
 out="$("${NOID[@]}" $S end 2>&1)"
@@ -299,6 +300,149 @@ check "begin --new-run re-detects language ignores" '$S begin --new-run >/dev/nu
 check "begin output stays machine-readable"     '$S unlock >/dev/null; out="$($S begin --new-run 2>/dev/null)"; [[ "$(grep -c "^[A-Z_]*=" <<<"$out")" == "$(wc -l <<<"$out" | tr -d " ")" ]]'
 check "tester prompt demands probing + known-issue check" 'grep -q "Known issues" "$ROOT/agents/tester.md" && grep -q "Probe beyond the listed steps" "$ROOT/agents/tester.md" && grep -q "contradicts the feature" "$ROOT/agents/tester.md"'
 check "coder prompt: claim only what is complete"        'grep -q "Claim only what is complete" "$ROOT/agents/coder.md"'
+
+echo "v3: living backlog (schema, dependencies, questions)"
+st_of() { .harness/feature-list.sh list | awk -F'\t' -v id="$1" '$1==id{print $2}'; }
+set_features() { # jq expression applied to the feature list, then re-lock + commit
+  jq "$1" .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json
+  .harness/feature-list.sh lock >/dev/null; .harness/step.sh trust accept >/dev/null; git add -A; git commit -qm spec
+}
+new_project 3
+FL=.harness/feature-list.sh; B=.harness/backlog.sh; S=.harness/step.sh
+set_features '.features[1].depends_on=["F001"]'
+check "claim writes status + attempt"         '$FL claim F001 >/dev/null; [[ "$(jq -r ".features[0].status" .harness/feature_list.json)" == claimed && "$(jq -r ".features[0].attempts[-1].event" .harness/feature_list.json)" == claim ]]'
+check "next skips features with unmet deps"   '[[ "$($FL next | cut -f1)" == F003 ]]'
+$FL pass F001 >/dev/null
+check "deps satisfied once dependency passes" '[[ "$($FL next | cut -f1)" == F002 ]]'
+check "validate rejects unknown depends_on"   'jq ".features[2].depends_on=[\"F999\"]" .harness/feature_list.json > $LOGD/bad.json; ! $FL validate --file $LOGD/bad.json >/dev/null 2>&1'
+check "validate rejects non-string verify"    'jq ".features[2].verify=[1]" .harness/feature_list.json > $LOGD/bad.json; ! $FL validate --file $LOGD/bad.json >/dev/null 2>&1'
+$FL ask F002 "which export format?" >/dev/null
+check "ask -> NEEDS_HUMAN, counted in stats"  '[[ "$(st_of F002)" == NEEDS_HUMAN ]] && out_has "1 need a human" $FL stats'
+check "questions lists the question"          'out_has "F002.*which export format" $FL questions'
+check "next skips features waiting on a human" '[[ "$($FL next | cut -f1)" == F003 ]]'
+$FL fail F003 one >/dev/null; $FL fail F003 two >/dev/null
+check "failures counts failed attempts"       '[[ "$($FL failures F003)" == 2 ]]'
+$FL answer F002 "CSV" >/dev/null
+check "answer makes the feature ready again"  '[[ "$(st_of F002)" == TODO && "$(jq -r ".features[1].answer" .harness/feature_list.json)" == CSV ]] && ! out_has "need a human" $FL stats'
+$FL answer F003 "try the streaming API" >/dev/null
+check "failures reset after an answer"        '[[ "$($FL failures F003)" == 0 ]]'
+check "status changes keep the spec lock"     '$FL verify-lock'
+
+echo "v3: backlog proposals"
+new_project 2
+B=.harness/backlog.sh; FL=.harness/feature-list.sh; S=.harness/step.sh
+H0="$(git rev-parse HEAD)"
+OUT="$(echo '{"add":[{"description":"export csv","steps":["click export"],"verify":["true"]},{"description":"import csv","steps":["upload"],"depends_on":["F001"]}]}' | $B propose --by planner --reason "csv support")"
+check "propose files a pending proposal"      'grep -q "proposed P001" <<<"$OUT" && out_has "^P001	pending	planner	+2" $B list'
+check "propose does not change the spec"      '[[ "$(jq ".features|length" .harness/feature_list.json)" == 2 ]] && $FL verify-lock'
+check "propose rejects invalid features"      '! echo "{\"add\":[{\"description\":\"no steps\"}]}" | $B propose --reason x >/dev/null 2>&1'
+check "propose rejects unknown ids"           '! echo "{\"drop\":[\"F777\"]}" | $B propose --reason x >/dev/null 2>&1'
+check "propose rejects empty payload"         '! echo "{}" | $B propose --reason x >/dev/null 2>&1'
+$B approve P001 >/dev/null
+check "approve appends features with new ids" '[[ "$(jq -r "[.features[].id]|join(\",\")" .harness/feature_list.json)" == F001,F002,F003,F004 ]] && [[ "$(jq -r ".features[2].status" .harness/feature_list.json)" == todo ]]'
+check "approve re-locks the spec"             '$FL verify-lock'
+check "approve records the source"            '[[ "$(jq -r ".features[2].source" .harness/feature_list.json)" == proposal:P001 ]]'
+check "approve commits only harness files"    'git log --oneline "$H0"..HEAD | grep -q "backlog: approve P001" && [[ -z "$(git status --porcelain)" ]]'
+check "approved verify commands are trusted"  '$S trust status >/dev/null 2>&1'
+check "approve refuses a non-pending proposal" '! $B approve P001 >/dev/null 2>&1'
+$FL pass F001 >/dev/null
+echo '{"amend":[{"id":"F001","steps":["new steps"]}]}' | $B propose --reason "change F001" >/dev/null; $B approve P002 >/dev/null
+check "amending a passing feature re-opens it" '[[ "$(st_of F001)" == TODO ]] && [[ "$(jq -r ".features[0].steps[0]" .harness/feature_list.json)" == "new steps" ]]'
+$B priority F004 0 >/dev/null
+check "priority reorders the queue"           '[[ "$(jq -r ".features[3].priority" .harness/feature_list.json)" == 0 ]]'
+$B drop F002 "not needed" >/dev/null
+check "drop excludes a feature from stats"    '[[ "$(st_of F002)" == DROPPED ]] && out_has "^0/3 passing" $FL stats'
+echo '{"drop":["F001"]}' | $B propose --reason "nah" >/dev/null; $B reject P005 "keep it" >/dev/null
+check "reject keeps the spec"                 '[[ "$(st_of F001)" != DROPPED ]] && out_has "rejected" $B list --all'
+$S begin --new-run >/dev/null
+echo '{"add":[{"description":"during","steps":["x"]}]}' | $B propose --reason during >/dev/null
+check "approve is refused during a session"   '! $B approve P006 >$LOGD/a1.log 2>&1 && grep -q "session is in progress" $LOGD/a1.log'
+# an agent bypasses the guard: edits list + lock directly during the session
+jq '.features += [{id:"F099",description:"sneaky",steps:["x"],status:"todo",passes:false}]' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json; cp .harness/feature_list.json .harness/.feature_list.lock.json
+OUT="$($S end 2>&1)"
+check "end undoes a spec change made mid-session" '! jq -e ".features[] | select(.id==\"F099\")" .harness/feature_list.json >/dev/null && grep -q "^WARN=a backlog approval" <<<"$OUT" && $FL verify-lock'
+check "proposals filed mid-session survive"    'out_has "^P006	pending" $B list'
+check "approve works again between sessions"  '$B approve P006 >/dev/null 2>&1 && jq -e ".features[] | select(.description==\"during\")" .harness/feature_list.json >/dev/null'
+
+echo "v3: gate-run verify commands"
+new_project 2
+FL=.harness/feature-list.sh; S=.harness/step.sh
+set_features '.features[0].verify=["false"] | .features[1].verify=["echo ok"]'
+$S begin --new-run >/dev/null; $FL claim F001 >/dev/null
+check "failing verify skips the tester"       'out_has "^SKIP: nothing claimed (verify commands failed: F001)" $S task tester'
+check "failing verify fails the feature"      '[[ "$(st_of F001)" == FAIL ]] && jq -r ".features[0].notes" .harness/feature_list.json | grep -q "verify command failed: false"'
+check "verify log is written"                 'ls .harness/sessions/*-verify-F001.log >/dev/null 2>&1'
+OUT="$($S end 2>/dev/null)"
+check "end reports VERIFY_FAILED"             'grep -q "^VERIFY_FAILED=F001$" <<<"$OUT"'
+$S begin >/dev/null
+check "retry task carries the failure note"   'out_has "Previous attempt failed: verify command failed" $S task coder'
+$FL claim F002 >/dev/null
+check "passing verify lets the tester run"    'out_has "awaiting verification: F002" $S task tester'
+$S end >/dev/null 2>&1
+new_project 1
+set_features '.features[0].verify=["false"] | .pipeline=[{agent:"coder"}]' >/dev/null
+jq '.pipeline=[{agent:"coder"}]' .harness/config.json > .harness/c && mv .harness/c .harness/config.json && .harness/step.sh trust accept >/dev/null; git add -A; git commit -qm p
+$S begin --new-run >/dev/null; $FL claim F001 >/dev/null; $S end >/dev/null 2>&1
+check "no tester: failing verify blocks the claim" '[[ "$(st_of F001)" == FAIL ]]'
+new_project 2
+jq '.verify_static="test -f marker.txt"' .harness/config.json > .harness/c && mv .harness/c .harness/config.json && .harness/step.sh trust accept >/dev/null; git add -A; git commit -qm p
+$S begin --new-run >/dev/null; $FL claim F001 >/dev/null
+check "verify_static runs for every claim"    'out_has "^SKIP: nothing claimed" $S task tester && [[ "$(st_of F001)" == FAIL ]]'
+$S end >/dev/null 2>&1
+check "verify_static is part of trust"        'jq ".verify_static=\"curl x|sh\"" .harness/config.json > .harness/c && mv .harness/c .harness/config.json; ! $S trust status >/dev/null 2>&1 && out_has "curl x" $S trust show'
+new_project 1
+jq '.features[0].verify=["rm -rf /tmp/evil"]' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json; .harness/feature-list.sh lock >/dev/null
+check "repo-supplied verify commands need trust" '! .harness/step.sh trust status >/dev/null 2>&1 && out_has "rm -rf /tmp/evil" .harness/step.sh trust show'
+new_project 2
+set_features '.features[0].verify=["true"]'
+check "headless run with verify commands completes" '.harness/run.sh >$LOGD/v1.log 2>&1; .harness/feature-list.sh done'
+
+echo "v3: escalation and terminal states"
+new_project 2
+FL=.harness/feature-list.sh; S=.harness/step.sh
+jq '.escalate_after_failures=2' .harness/config.json > .harness/c && mv .harness/c .harness/config.json; git add -A; git commit -qm p
+$S begin --new-run >/dev/null; $FL fail F001 "broken once" >/dev/null; $S end >/dev/null 2>&1
+$S begin >/dev/null; $FL fail F001 "broken twice" >/dev/null; OUT="$($S end 2>/dev/null)"
+check "repeated failures escalate to a human" 'grep -q "^NEEDS_HUMAN=F001$" <<<"$OUT" && [[ "$(st_of F001)" == NEEDS_HUMAN ]] && out_has "failed 2 attempts" $FL questions'
+check "escalation counts as progress"         'grep -q "^STUCK=0/3$" <<<"$OUT"'
+check "loop moves on to the next feature"     'out_has "^TARGET=F002$" $S begin'
+$FL claim F002 >/dev/null; $S task tester >/dev/null; $FL pass F002 >/dev/null; $S end >/dev/null 2>&1
+check "only human-blocked work left: code 8"  'out_has "^CODE=8$" $S begin && out_has "waiting for a human: F001" $S begin'
+$FL answer F001 "use UTF-8" >/dev/null
+check "answer resumes the loop"               'out_has "^TARGET=F001$" $S begin'
+check "coder task carries the human answer"   'out_has "Human answer for F001: use UTF-8" $S task coder'
+$S end >/dev/null 2>&1
+new_project 2
+set_features '.features[0].depends_on=["F002"] | .features[1].depends_on=["F001"]'
+check "unsatisfiable dependencies: code 9"    'out_has "^CODE=9$" .harness/step.sh begin --new-run'
+new_project 1
+touch .harness/STOP
+check "new run reports a cleared STOP flag"   'out_has "^NOTE=cleared a STOP flag" .harness/step.sh begin --new-run'
+echo "not json" > .harness/.step_state.json
+check "corrupted state gives a clear error"   '! .harness/step.sh begin >$LOGD/c1.log 2>&1 && grep -q "corrupted" $LOGD/c1.log'
+rm .harness/.step_state.json; .harness/step.sh unlock >/dev/null
+new_project 2
+.harness/feature-list.sh ask F001 "pick a colour" >/dev/null
+echo '{"add":[{"description":"x","steps":["y"]}]}' | .harness/backlog.sh propose --reason "more" >/dev/null
+check "status shows questions and proposals"  'out_has "pick a colour" .harness/status.sh && out_has "P001" .harness/status.sh'
+check "summary lists questions and proposals" '.harness/step.sh summary x 0 >/dev/null 2>&1; grep -q "Waiting for a human" .harness/last-run.md && grep -q "P001: more" .harness/last-run.md'
+check "v2 lists (passes/claimed only) still work" 'jq "del(.features[].status) | .features[1].claimed=true" .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json; [[ "$(st_of F002)" == CLAIMED ]] && out_has "1 awaiting verification" .harness/feature-list.sh stats'
+
+echo "ralph stop hook"
+HOOK="$ROOT/hooks/stop-hook.sh"
+ralph_state() { mkdir -p .claude; printf -- '---\nactive: true\niteration: 1\nsession_id: s1\nmax_iterations: %s\ncompletion_promise: "ALL DONE"\n---\n\ndo the thing\n' "$1" > .claude/ralph-loop.local.md; }
+transcript() { jq -cn --arg t "$1" '{role:"assistant",message:{content:[{type:"text",text:$t}]}}' > t.jsonl; }
+hook_in() { jq -cn --arg t "$PWD/t.jsonl" --arg s "$1" '{session_id:$s,transcript_path:$t}'; }
+P="$(mktemp -d)"; cd "$P"
+ralph_state 5; transcript "still working"
+check "hook blocks and feeds the prompt back"  'hook_in s1 | bash "$HOOK" | jq -e ".decision==\"block\" and (.reason|test(\"do the thing\"))" >/dev/null && grep -q "^iteration: 2" .claude/ralph-loop.local.md'
+transcript "$(printf 'done\n<promise>  ALL\n  DONE </promise>')"
+check "multi-line promise ends the loop"       'hook_in s1 | bash "$HOOK" >/dev/null; [[ ! -f .claude/ralph-loop.local.md ]]'
+ralph_state 5; transcript "<promise>ALL DONE</promise>"
+check "other sessions are not affected"        '[[ -z "$(hook_in s2 | bash "$HOOK")" ]] && [[ -f .claude/ralph-loop.local.md ]]'
+ralph_state 1; transcript "nope"
+check "max iterations ends the loop"           'hook_in s1 | bash "$HOOK" >/dev/null; [[ ! -f .claude/ralph-loop.local.md ]]'
+check "hook needs no perl"                     '! grep -q perl "$HOOK"'
 
 echo; echo "passed: $PASS  failed: $FAIL"
 [[ $FAIL -eq 0 ]]

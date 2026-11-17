@@ -18,7 +18,7 @@ while [[ $# -gt 0 ]]; do
 Ralph Loop - Interactive self-referential development loop
 
 USAGE:
-  /ralph-loop [PROMPT...] [OPTIONS]
+  /wreck-it-ralph:ralph [PROMPT...] [OPTIONS]
 
 ARGUMENTS:
   PROMPT...    Initial prompt to start the loop (can be multiple words without quotes)
@@ -40,14 +40,14 @@ DESCRIPTION:
   - Learning how Ralph works
 
 EXAMPLES:
-  /ralph-loop Build a todo API --completion-promise 'DONE' --max-iterations 20
-  /ralph-loop --max-iterations 10 Fix the auth bug
-  /ralph-loop Refactor cache layer  (runs forever)
-  /ralph-loop --completion-promise 'TASK COMPLETE' Create a REST API
+  /wreck-it-ralph:ralph Build a todo API --completion-promise 'DONE' --max-iterations 20
+  /wreck-it-ralph:ralph --max-iterations 10 Fix the auth bug
+  /wreck-it-ralph:ralph Refactor cache layer  (runs forever)
+  /wreck-it-ralph:ralph --completion-promise 'TASK COMPLETE' Create a REST API
 
 STOPPING:
-  Only by reaching --max-iterations or detecting --completion-promise
-  No manual stop - Ralph runs infinitely by default!
+  Reaching --max-iterations, detecting --completion-promise, or running
+  /wreck-it-ralph:cancel-ralph at any time.
 
 MONITORING:
   # View current iteration:
@@ -119,11 +119,11 @@ if [[ -z "$PROMPT" ]]; then
   echo "   Ralph needs a task description to work on." >&2
   echo "" >&2
   echo "   Examples:" >&2
-  echo "     /ralph-loop Build a REST API for todos" >&2
-  echo "     /ralph-loop Fix the auth bug --max-iterations 20" >&2
-  echo "     /ralph-loop --completion-promise 'DONE' Refactor code" >&2
+  echo "     /wreck-it-ralph:ralph Build a REST API for todos" >&2
+  echo "     /wreck-it-ralph:ralph Fix the auth bug --max-iterations 20" >&2
+  echo "     /wreck-it-ralph:ralph --completion-promise 'DONE' Refactor code" >&2
   echo "" >&2
-  echo "   For all options: /ralph-loop --help" >&2
+  echo "   For all options: /wreck-it-ralph:ralph --help" >&2
   exit 1
 fi
 
@@ -164,8 +164,8 @@ self-referential loop where you iteratively improve on the same task.
 
 To monitor: head -10 .claude/ralph-loop.local.md
 
-⚠️  WARNING: This loop cannot be stopped manually! It will run infinitely
-    unless you set --max-iterations or --completion-promise.
+Stop it any time with /wreck-it-ralph:cancel-ralph. Without --max-iterations
+or --completion-promise it runs until you cancel it.
 
 🔄
 EOF

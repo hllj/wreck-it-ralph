@@ -19,5 +19,8 @@
     }
   ],
   "allow_dirty": false,
-  "lock_timeout_minutes": 120
+  "lock_timeout_minutes": 120,
+  "version": 3,
+  "verify_static": "",
+  "escalate_after_failures": 3
 }

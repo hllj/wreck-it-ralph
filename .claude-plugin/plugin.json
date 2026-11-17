@@ -1,9 +1,10 @@
 {
-  "name": "wreck-it-ralph-loop",
-  "version": "2.1.0",
-  "description": "Ralph loops plus a long-running agent harness: initializer agent, feature list, progress file + git, init.sh, and a coder -> tester pipeline run with fresh-context subagents or headless sessions.",
+  "name": "wreck-it-ralph",
+  "version": "3.0.0",
+  "description": "Loop-engineered long-running agent harness: a living feature backlog you can grow at any time, fresh-context coder -> verifier -> tester sessions, gate-run verify commands, human escalation, plus the in-session Ralph loop.",
   "author": {
-    "name": "wreck-it-ralph-loop contributors"
+    "name": "wreck-it-ralph contributors"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "keywords": ["ralph", "loop", "harness", "long-running", "agents", "loop-engineering"]
 }
