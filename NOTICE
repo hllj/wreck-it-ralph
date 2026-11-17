@@ -1,0 +1,12 @@
+wreck-it-ralph-loop
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This project is derived from the "Ralph Loop" Claude Code plugin by Anthropic, PBC
+(Apache License 2.0): the in-session Stop-hook loop (hooks/stop-hook.sh,
+scripts/setup-ralph-loop.sh, commands/ralph-loop.md, commands/cancel-ralph.md,
+commands/help.md) originates from that work. The Ralph Wiggum technique itself is
+credited to Geoffrey Huntley.
+
+Modifications: the plugin was renamed, and the long-running harness (agents/, templates/,
+scripts/harness-*.sh, scripts/feature-list.sh, commands/harness-*.md, tests/) was added. It
+implements ideas from Anthropic's engineering post "Effective harnesses for long-running agents".
