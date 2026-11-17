@@ -18,7 +18,7 @@ ok()   { echo "  ✓ $*"; }
 warn() { echo "  ! $*"; WARNS=$((WARNS + 1)); }
 bad()  { echo "  ✗ $*"; FAILS=$((FAILS + 1)); }
 
-KNOWN_EVENTS="run_started session_started feature_claimed verify_failed feature_passed feature_failed needs_human session_ended run_ended step_finished proposal_filed proposal_approved run_refused pr_opened"
+KNOWN_EVENTS="run_started session_started feature_claimed verify_failed feature_passed feature_failed needs_human session_ended run_ended step_finished proposal_filed proposal_approved run_refused pr_opened fanout_started fanout_merged"
 
 # Look for a plugin agent / skill / command on disk. Built-in skills are not on disk, so a miss is a warning.
 find_plugin_item() { # plugin kind(agents|skills|commands) item

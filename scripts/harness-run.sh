@@ -99,6 +99,7 @@ run_agent() { # name task logfile
   local name="$1" task="$2" logfile="$3" sys="" json="${3%.log}.json" rc=0 info type optional
   info="$("$STEP" spawn-info "$name" 2>"$logfile")" || { log "   step '$name': $(cat "$logfile")"; return 127; }
   type="$(sed -n 's/^TYPE=//p' <<<"$info" | head -n1)"; optional="$(sed -n 's/^OPTIONAL=//p' <<<"$info" | head -n1)"
+  local model; model="$(sed -n '1,/^---PROMPT---$/s/^MODEL=//p' <<<"$info" | head -n1)"; model="${model:-$MODEL}"
   case "$type" in
     gate) "$STEP" run-step "$name" > "$logfile" 2>&1; return $? ;;
     missing) echo "optional step '$name': agent not found" > "$logfile"; return 75 ;;
@@ -113,11 +114,11 @@ $task" ;;
   esac
   local args=(-p --permission-mode "$PERM" --output-format json)
   [[ -n "$sys" ]] && args+=(--append-system-prompt "$sys")
-  [[ -n "$MODEL" ]]   && args+=(--model "$MODEL")
+  [[ -n "$model" ]]   && args+=(--model "$model")
   [[ -n "$ALLOWED" ]] && args+=(--allowedTools "$ALLOWED")
   [[ -n "$MCP" && -f "$MCP" ]] && args+=(--mcp-config "$MCP")
   if [[ $SUPPORTS_BUDGET -eq 1 ]]; then
-    local left; left="$(sed -n 's/^REMAINING_USD=//p' <<<"$("$STEP" budget)")"
+    local left; left="${BUDGET_LEFT:-$(sed -n 's/^REMAINING_USD=//p' <<<"$("$STEP" budget)")}"
     [[ -n "$left" ]] && args+=(--max-budget-usd "$left")
   fi
   # Task goes via stdin: variadic flags (--mcp-config) would swallow a positional prompt.
@@ -125,13 +126,38 @@ $task" ;;
   # Human-readable log: the agent's final text, then stderr. Raw JSON (cost, usage) stays next to it.
   if jq -e 'type == "object" and has("result")' "$json" >/dev/null 2>&1; then
     { jq -r '.result // ""' "$json"; echo; cat "$logfile"; } > "$logfile.tmp" && mv "$logfile.tmp" "$logfile"
-    record_usage "$name" "$json"
+    [[ -n "${NO_RECORD:-}" ]] || record_usage "$name" "$json"
   else
     { cat "$json"; cat "$logfile"; } > "$logfile.tmp" && mv "$logfile.tmp" "$logfile"
   fi
   if [[ "$optional" == true ]] && grep -q "EXTENSION UNAVAILABLE" "$logfile"; then return 75; fi
   if [[ "$optional" == true && $rc -ne 0 ]]; then return 75; fi
   return $rc
+}
+
+# Fan the coder step out over git worktrees when parallel.max_workers > 1 and the batch has >1 feature.
+# Returns 0 when it ran the coders (the normal coder step is then skipped), 1 to fall back.
+run_parallel_coders() { # session
+  local n="$1" fo workers line id path abs pids=() ids=() i left share
+  fo="$("$STEP" fanout plan)"; workers="$(kv WORKERS "$fo")"
+  [[ "${workers:-1}" -gt 1 ]] || return 1
+  left="$(sed -n 's/^REMAINING_USD=//p' <<<"$("$STEP" budget)")"
+  share=""; [[ -n "$left" ]] && share="$(jq -n --argjson l "$left" --argjson w "$workers" '$l / $w | . * 100 | floor / 100')"
+  log "   ⇉ $workers coders in parallel (git worktrees)"
+  while IFS= read -r line; do
+    id="${line%% *}"; path="${line#* }"; abs="$(pwd)/$HARNESS_DIR/sessions/$(printf '%03d' "$n")-coder-$id.log"
+    task="$("$STEP" fanout task "$id")"
+    log "   ▶ coder[$id] → $abs"
+    ( cd "$path" && NO_RECORD=1 BUDGET_LEFT="$share" run_agent coder "$task" "$abs" ) &
+    pids+=("$!"); ids+=("$id")
+  done < <(sed -n 's/^WORKER=//p' <<<"$fo")
+  for i in "${!pids[@]}"; do
+    if wait "${pids[$i]}"; then log "   ✓ coder[${ids[$i]}] finished"; else log "   ✗ coder[${ids[$i]}] exited with an error (see log)"; fi
+    record_usage coder "$HARNESS_DIR/sessions/$(printf '%03d' "$n")-coder-${ids[$i]}.json"
+  done
+  local m; m="$("$STEP" fanout merge)"
+  log "   ⇇ merged: $(kv MERGED "$m")$([[ -n "$(kv CONFLICTS "$m")" ]] && echo " | conflicts (retried later): $(kv CONFLICTS "$m")")"
+  return 0
 }
 
 NEWRUN=(--new-run --owner-pid "$$")
@@ -155,6 +181,7 @@ while true; do
 
   session_failed=0
   while IFS=$'\t' read -r agent blocking every when; do
+    if [[ "$agent" == coder ]] && run_parallel_coders "$n"; then continue; fi
     task="$("$STEP" task "$agent")"
     if [[ "$task" == SKIP:* ]]; then log "   skip $agent (${task#SKIP: })"; continue; fi
     logfile="$HARNESS_DIR/sessions/$(printf '%03d' "$n")-$agent.log"

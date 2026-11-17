@@ -7,7 +7,7 @@ You are the TESTER agent of a long-running harness. You run in a FRESH context a
 
 ## Procedure
 
-1. `pwd`; read `.harness/progress.md` and `git log --oneline -10`.
+1. `pwd`; read `.harness/learnings.md`, `.harness/progress.md` and `git log --oneline -10`. Check `preset` in `.harness/config.json`: `web` means use the browser; `api` means exercise the HTTP API with real requests (curl or the project's client); `cli`/`data`/`docs` means run the real commands and inspect their output or the built artifacts.
 2. Run `.harness/init.sh`. If the app does not start or the smoke test fails, report it: `fail` every claimed feature with note "app broken: <reason>" and append the details to progress.md.
 3. Get the features to verify: the ids in the task message (also `.harness/feature-list.sh claimed`). The harness has already run each feature's `verify` commands and they passed; that is necessary, not sufficient. For each one, read it with `.harness/feature-list.sh show <ID>` and execute each of its `steps` against the RUNNING app, exactly as a human would:
    - Prefer the Playwright MCP browser tools (navigate, click, type, snapshot, screenshot). Take a screenshot or snapshot to confirm the visible result.

@@ -27,6 +27,15 @@ Every agent runs in a **fresh context**, and all state lives on disk (`.harness/
 | `/wreck-it-ralph:intake [github] [--label ralph]` | New labelled issues become planner proposals for your approval. Issue text is untrusted. |
 | `/wreck-it-ralph:doctor` | Health check, including whether pipeline extensions (other plugins' agents, skills) and hooks resolve. |
 
+**Scale and memory:**
+- `parallel.max_workers > 1` runs coders for independent features (disjoint `tags`) in git worktrees and merges them back. This is headless only.
+- The curator keeps `learnings.md`, and `progress.md` rotates past `progress_max_kb`.
+
+**Presets and models:**
+- Presets: `web`, `api`, `cli`, `data`, `docs`, `library` (no tester; verify tests decide) and `none`.
+- `init --brownfield` records existing behaviour as baseline features.
+- A per-step `model` overrides the global model for that step.
+
 **Rollout levels** (config `rollout`, or `--rollout` on a run):
 - **L1 shadow:** works on a `harness/shadow-*` branch, switches back, and leaves a report.
 - **L2 assisted:** works on a `harness/run-*` branch, with optional push and PR (`rollout_push`, `rollout_pr`).

@@ -1,6 +1,6 @@
 ---
 description: "Create or repair the .harness scaffold (presets, prerequisite check, .gitignore, wrappers) without running the initializer"
-argument-hint: "[--preset web|cli|none] [--max-sessions N] [--no-browser] [--check] [--refresh] [--notify] [--force]"
+argument-hint: "[--preset web|cli|api|library|data|docs|none] [--max-sessions N] [--no-browser] [--check] [--refresh] [--notify] [--force]"
 allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh:*)"]
 ---
 
@@ -9,7 +9,7 @@ allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh:*)"]
 User arguments: $ARGUMENTS
 
 Run the setup script with the Bash tool: `"${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh"` followed by ONLY these options if the user gave them (copy them verbatim; ignore anything else and never pass free text through):
-`--preset web|cli|none`, `--max-sessions <number>`, `--no-browser`, `--check`, `--refresh`, `--notify`, `--force`. (`--notify` adds desktop-notification hooks for `needs_human` and `run_ended`.) (Do not pass `--trust` on the user's behalf; trusting goes through `/wreck-it-ralph:trust`.)
+`--preset web|cli|api|library|data|docs|none`, `--max-sessions <number>`, `--no-browser`, `--check`, `--refresh`, `--notify`, `--force`. (`--notify` adds desktop-notification hooks for `needs_human` and `run_ended`.) (Do not pass `--trust` on the user's behalf; trusting goes through `/wreck-it-ralph:trust`.)
 
 What it does (safe to re-run; it merges and never overwrites config, mcp.json, progress.md unless `--force`):
 - checks prerequisites (git, jq required; claude, npx optional),

@@ -28,6 +28,7 @@ The only options you may pass through from the user's arguments are `--max-sessi
    - `TYPE=missing` → an optional agent file does not exist: note it as `skipped` and continue.
    - any other `TYPE=<type>` (for example `wreck-it-ralph:coder`, or another plugin's agent such as `pr-review-toolkit:code-reviewer`) → call the **Agent** tool with `subagent_type: "<type>"` and the task message as the prompt.
    - If `OPTIONAL=true` and the step cannot run (the Agent tool rejects the subagent type, or the subagent answers `EXTENSION UNAVAILABLE`), record it with `note <agent> skipped` and go on. It never fails the session.
+   - If spawn-info printed `MODEL=sonnet|opus|haiku|fable`, pass that as the Agent tool's `model`. Ignore any other value; it is meant for headless runs.
    - Run it in the foreground and wait. Never run two steps in parallel, and never do a step's work yourself.
 3. Record what it cost: if the Agent tool result reports usage (for example `subagent_tokens: N` and `duration_ms: M`), run `.harness/step.sh ledger add <agent> --tokens N --ms M`, passing only the numbers. Skip this if no usage was reported. Budgets (`budget.max_tokens`, `budget.max_wall_minutes`) are checked by the gates from this ledger.
 4. Leave a failure trail: run `.harness/step.sh note <agent> ok|failed` with a one-line outcome (max ~200 chars, what happened or why it failed) written via a quoted heredoc on stdin, e.g. `.harness/step.sh note coder ok <<'EOF'` / the line / `EOF`. Use `failed` if the subagent errored or reported it could not finish.

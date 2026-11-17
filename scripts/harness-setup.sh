@@ -5,9 +5,12 @@
 # overwrites your config, mcp.json, progress log or feature list unless --force.
 #
 # Usage: harness-setup.sh [options]
-#   --preset web|cli|none   web  = coder -> tester with the Playwright MCP (browser testing)
-#                           cli  = coder -> tester, no browser
-#                           none = coder only (claims are accepted without a tester)
+#   --preset P              web     = coder -> tester with the Playwright MCP (browser testing)
+#                           cli     = coder -> tester, no browser (also: api, data, docs - same pipeline,
+#                                     different guidance for the initializer and tester)
+#                           library = coder only; the verify gate (tests) is the verifier
+#                           none    = coder only (claims are accepted after the verify gate)
+#                           every preset except none also runs the curator every 10 sessions
 #                           default: web if package.json/index.html exists, else cli
 #   --max-sessions N        session cap written to config.json (default 100)
 #   --no-browser            same as --preset cli when the preset would be web
@@ -49,7 +52,7 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
-case "$PRESET" in ""|web|cli|none) ;; *) echo "❌ --preset must be web, cli or none" >&2; exit 1 ;; esac
+case "$PRESET" in ""|web|cli|api|library|data|docs|none) ;; *) echo "❌ --preset must be web, cli, api, library, data, docs or none" >&2; exit 1 ;; esac
 [[ "$MAX_SESSIONS" =~ ^([0-9]+)?$ ]] || { echo "❌ --max-sessions must be a number" >&2; exit 1; }
 
 # Wrappers so agents and users never need to know the plugin path. They resolve the plugin at run
@@ -182,10 +185,11 @@ mkdir -p "$HARNESS_DIR/agents" "$HARNESS_DIR/sessions"
 
 if [[ ! -f "$HARNESS_DIR/config.json" || $FORCE -eq 1 ]]; then
   jq --arg preset "$PRESET" --argjson max "${MAX_SESSIONS:-100}" '
-    .max_sessions = $max
-    | if $preset == "web" then .mcp_config = ".harness/mcp.json"
-      elif $preset == "cli" then .mcp_config = ""
-      else .mcp_config = "" | .pipeline = [{agent: "coder", blocking: true}] end
+    .max_sessions = $max | .preset = $preset
+    | if $preset == "web" then .mcp_config = ".harness/mcp.json" else .mcp_config = "" end
+    | if $preset == "none" then .pipeline = [{agent: "coder", blocking: true}]
+      elif $preset == "library" then .pipeline = [.pipeline[] | select(.agent != "tester")]
+      else . end
   ' "$PLUGIN_ROOT/templates/config.json" > "$HARNESS_DIR/config.json"
   CREATED+=("config.json (preset: $PRESET)")
 else
@@ -203,6 +207,9 @@ if [[ "$PRESET" == web ]]; then
   else KEPT+=("mcp.json"); fi
 fi
 
+if [[ ! -f "$HARNESS_DIR/learnings.md" || $FORCE -eq 1 ]]; then
+  printf '# Learnings\n\n(distilled by the curator agent; every session reads this first. Keep it short and true.)\n' > "$HARNESS_DIR/learnings.md"; CREATED+=("learnings.md")
+fi
 if [[ ! -f "$HARNESS_DIR/progress.md" || $FORCE -eq 1 ]]; then
   printf '# Progress log\n\n(append-only; one entry per session)\n' > "$HARNESS_DIR/progress.md"; CREATED+=("progress.md")
 else KEPT+=("progress.md"); fi
@@ -225,7 +232,8 @@ State for the wreck-it-ralph long-running agent harness. Agents work in fresh co
 
 - `feature_list.json`  source of truth; agents only change statuses via `./feature-list.sh claim|pass|fail|ask`
 - `proposals.json`     backlog changes (add / amend / drop features) awaiting human approval (`./backlog.sh`)
-- `progress.md`        append-only session log (read it first)
+- `learnings.md`       distilled lessons (curator); read this first
+- `progress.md`        append-only session log (older entries rotate into `progress/`)
 - `init.sh`            starts the app + smoke test, run at the start of every session
 - `config.json`        pipeline, limits, permission mode (headless), final verification
 - `mcp.json`           browser (Playwright) MCP config, web preset only

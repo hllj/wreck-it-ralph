@@ -14,6 +14,9 @@
 #   spawn-info <name>            TYPE=<subagent type> | general-purpose | gate, OPTIONAL=true|false;
 #                                for general-purpose the prompt follows "---PROMPT---"
 #   run-step <name>              run a `cmd:` pipeline step in the gate (exit code = result)
+#   fanout plan|task <ID>|merge|cleanup   parallel coders in git worktrees (headless; parallel.max_workers > 1):
+#                                plan picks the batch and creates worktrees (WORKERS=n, WORKER=<id> <path>),
+#                                merge folds each worker branch back and applies its claim/question/proposals
 #   end                          after the pipeline: spec-lock check, clean tree, stuck detection.
 #                                Prints PASSING, STATS, COMMITS, STUCK, NEXT=continue|stop, REASON, CODE
 #   summary <reason> <code>      print + save the run summary (.harness/last-run.md)
@@ -94,14 +97,20 @@ TRUST_FILE="$HARNESS_DIR/.trusted"
 mcp_path() { cfg '.mcp_config // ""'; }
 trust_material() { # everything that can run commands or steer agents with elevated rights
   jq -S '{permission_mode, allowed_tools, final_verify_command, verify_static, claude_bin, model, mcp_config,
-          uses: [.pipeline[]? | .use // empty], hooks: (.hooks // {}), rollout_push, rollout_pr}' "$CFG"
+          uses: [.pipeline[]? | .use // empty], models: [.pipeline[]? | .model // empty], hooks: (.hooks // {}),
+          rollout_push, rollout_pr, parallel}' "$CFG"
   local m; m="$(mcp_path)"; if [[ -n "$m" && -f "$m" ]]; then echo "## mcp: $m"; cat "$m"; fi
   local f; for f in $(ls "$HARNESS_DIR"/agents/*.md 2>/dev/null | sort); do echo "## agent: $f"; cat "$f"; done
 }
 trust_hash() { trust_material | sha; }
 # Per-feature verify commands are trusted separately (line 2 of .trusted): the initializer and approved
 # proposals add them, and both are reviewed by the user, so they can be accepted without re-trusting config.
-verify_hash() { local v; v="$("$FL" verify-cmds 2>/dev/null || true)"; if [[ -z "$v" ]]; then echo none; else printf '%s' "$v" | sha; fi; }
+# Part 2 also covers .harness/stop.sh, which the initializer writes and the gate runs at the end of a run.
+verify_hash() {
+  local v; v="$("$FL" verify-cmds 2>/dev/null || true)"
+  [[ -f "$HARNESS_DIR/stop.sh" ]] && v="$v"$'\n## stop.sh\n'"$(cat "$HARNESS_DIR/stop.sh")"
+  if [[ -z "$v" ]]; then echo none; else printf '%s' "$v" | sha; fi
+}
 config_trusted() { [[ -f "$TRUST_FILE" && "$(sed -n 1p "$TRUST_FILE")" == "$(trust_hash)" ]]; }
 is_trusted() { config_trusted && [[ "$(sed -n 2p "$TRUST_FILE" | sed 's/^$/none/')" == "$(verify_hash)" ]]; }
 
@@ -126,6 +135,9 @@ cmd_trust() {
       if [[ -n "$h" ]]; then echo; echo "Hooks (run on harness events):"; echo "$h"; fi
       local v; v="$("$FL" verify-cmds 2>/dev/null || true)"
       if [[ -n "$v" ]]; then echo; echo "Feature verify commands (feature_list.json):"; printf '%s\n' "$v" | sort -u | sed 's/^/  $ /'; fi
+      if [[ -f "$HARNESS_DIR/stop.sh" ]]; then echo; echo "Cleanup script run by the gate at the end of each run ($HARNESS_DIR/stop.sh):"; sed 's/^/  | /' "$HARNESS_DIR/stop.sh"; fi
+      local pm; pm="$(jq -r '.pipeline[]? | select(.model) | "  \(.name // .agent): \(.model)"' "$CFG")"
+      if [[ -n "$pm" ]]; then echo; echo "Per-step models:"; echo "$pm"; fi
       local m; m="$(mcp_path)"
       if [[ -n "$m" && -f "$m" ]]; then echo; echo "MCP servers ($m):"; jq -r '.mcpServers | to_entries[] | "  \(.key): \(.value.command) \((.value.args // []) | join(" "))"' "$m" 2>/dev/null || cat "$m"; fi
       local f any=0; for f in "$HARNESS_DIR"/agents/*.md; do [[ -f "$f" ]] || continue; any=1; done
@@ -144,6 +156,25 @@ lock_touch() { [[ -f "$LOCK" ]] && lock_write "$(jq -r '.pid // 0' "$LOCK" 2>/de
 
 # stop decision helper (prints DECISION lines)
 stop_decision() { emit DECISION stop; emit REASON "$1"; emit CODE "$2"; }
+
+# Keep progress.md small enough to read every session: move older entries to progress/archive-NNN.md
+# (split at an entry heading), keep the newest ~150 lines. learnings.md holds the distilled lessons.
+rotate_progress() {
+  local f="$HARNESS_DIR/progress.md" max size total cut n arch
+  max="$(cfg '.progress_max_kb // 64')"
+  [[ -f "$f" && "$max" =~ ^[0-9]+$ && "$max" -gt 0 ]] || return 0
+  size="$(wc -c < "$f" | tr -d ' ')"
+  (( size > max * 1024 )) || return 0
+  total="$(wc -l < "$f" | tr -d ' ')"; cut=$(( total - 150 )); (( cut > 1 )) || return 0
+  cut="$(awk -v c="$cut" 'NR >= c && /^## / {print NR; exit}' "$f")"; cut="${cut:-$(( total - 150 ))}"
+  mkdir -p "$HARNESS_DIR/progress"
+  n=$(( $(find "$HARNESS_DIR/progress" -name 'archive-*.md' | wc -l) + 1 )); arch="$HARNESS_DIR/progress/archive-$(printf '%03d' "$n").md"
+  head -n $(( cut - 1 )) "$f" > "$arch"
+  { echo "# Progress log"; echo
+    echo "(append-only; older entries were moved to progress/archive-*.md; distilled lessons are in learnings.md)"; echo
+    tail -n +"$cut" "$f"; } > "$f.tmp.$$" && mv "$f.tmp.$$" "$f"
+  echo "harness: progress.md over ${max}KB; moved older entries to $arch" >&2
+}
 
 ensure_clean_state() { # session
   if [[ -n "$(git status --porcelain)" ]]; then
@@ -301,6 +332,7 @@ cmd_begin() {
       '{run:$run, start_head:$head, ran:0, stuck:0, extra_task:"", max:$max, session:0, session_start:$s0, in_session:false,
         rollout:$rollout, run_branch:$rb, base_branch:$base}' > "$STATE"
     ensure_all_ignores "$HARNESS_DIR" >&2 || true
+    [[ -d "$WT_DIR" ]] && cmd_fanout cleanup
     fire run_started "stats=$("$FL" stats)" >&2
   fi
 
@@ -445,6 +477,8 @@ cmd_spawn_info() {
   entry="$(step_entry "$name")"
   use="$(jq -r '.use // ""' <<<"$entry")"; optional="$(jq -r '.optional // false' <<<"$entry")"
   [[ -z "$use" ]] && use="agent:$name"
+  local model; model="$(jq -r '.model // ""' <<<"$entry")"
+  [[ -n "$model" ]] && echo "MODEL=$model"
   case "$use" in
     agent:*:*) # another plugin's agent, e.g. agent:pr-review-toolkit:code-reviewer
       echo "TYPE=${use#agent:}"; echo "OPTIONAL=$optional" ;;
@@ -505,6 +539,7 @@ cmd_end() {
   local n limit stuck before after
   n="$(st_get session)"; limit="$(cfg '.stuck_limit // 3')"; stuck="$(st_get stuck)"
   REVERTED=0
+  if [[ "$(fanout_workers | jq length)" -gt 0 ]]; then cmd_fanout merge >/dev/null; fi   # a runner that skipped it
   check_backlog_snapshot
   cmd_verify >/dev/null
   if ! has_tester; then # no tester in the pipeline: verified claims are accepted as passes
@@ -542,6 +577,7 @@ cmd_end() {
     fire needs_human "feature=$fid2" "session=$n" "question=$(jq -r --arg id "$fid2" '.features[] | select(.id == $id) | .question // "" | .[0:300]' "$HARNESS_DIR/feature_list.json")" >&2
   done
   check_spec_lock
+  rotate_progress
   ensure_clean_state "$n"
   lock_touch
   st_set in_session false
@@ -613,6 +649,98 @@ rollout_finish() { # rollout run_branch base -> markdown lines (L2: optional pus
   echo "- Review: \`git diff $base...$rb\`. Merge: \`git checkout $base && git merge $rb\`."
 }
 
+# ---------- parallel fan-out (headless) ----------
+WT_DIR="$HARNESS_DIR/worktrees"
+fanout_workers() { jq -c '.fanout // []' "$STATE" 2>/dev/null || echo '[]'; }
+
+cmd_fanout() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    plan)
+      local max n target ids id path branch list='[]'
+      max="$(jq -r '(.parallel // {}).max_workers // 1' "$CFG")"; n="$(st_get session)"; target="$(st_get target)"
+      [[ "$max" =~ ^[0-9]+$ && "$max" -gt 1 && -n "$target" ]] || { emit WORKERS 1; return 0; }
+      ids="$("$FL" batch "$max")"
+      if [[ "$(wc -l <<<"$ids" | tr -d ' ')" -lt 2 ]]; then emit WORKERS 1; return 0; fi
+      # progress.md: concatenate both sides instead of conflicting
+      local attrs; attrs="$(git rev-parse --git-path info/attributes)"; mkdir -p "$(dirname "$attrs")"
+      grep -qxF ".harness/progress.md merge=union" "$attrs" 2>/dev/null || echo ".harness/progress.md merge=union" >> "$attrs"
+      mkdir -p "$WT_DIR"
+      for id in $ids; do
+        path="$WT_DIR/$id"; branch="harness/wt-$n-$id"
+        git worktree add -q -b "$branch" "$path" HEAD >/dev/null 2>&1 || { echo "harness: could not create worktree for $id; it stays for a later session" >&2; continue; }
+        (cd "$path" && HARNESS_DIR=.harness "$PLUGIN_ROOT/scripts/harness-setup.sh" --refresh >/dev/null 2>&1) || true
+        list="$(jq -c --arg id "$id" --arg p "$path" --arg b "$branch" '. + [{id: $id, path: $p, branch: $b}]' <<<"$list")"
+        emit WORKER "$id $path"
+      done
+      st_set fanout "$list"
+      emit WORKERS "$(jq length <<<"$list")"
+      fire fanout_started "session=$n" "features=$(jq -r 'map(.id) | join(" ")' <<<"$list")" >&2
+      ;;
+    task)
+      local id="${1:?feature id required}" n k total ctx
+      n="$(st_get session)"; total="$(fanout_workers | jq length)"
+      k="$(fanout_workers | jq -r --arg id "$id" 'map(.id) | index($id) // empty')"; [[ -n "$k" ]] || die "$id is not a worker this session"
+      ctx="$(feature_context "$id")"
+      echo "Harness session $n, parallel worker $((k + 1)) of $total. Progress: $("$FL" stats). Target feature: $id. Features awaiting verification: none.${ctx:+ $ctx}
+You are one of $total coders building different features at the same time, each in its own git worktree (this directory). Your branch is merged into the main tree after all workers finish, so: stay strictly inside what $id needs, do not refactor or reformat shared code, do not rename shared files, and keep your progress.md entry to your feature. Claim with .harness/feature-list.sh claim $id as usual; the harness applies it after the merge."
+      ;;
+    merge)
+      local w id path branch status question base merged="" conflicts="" n
+      n="$(st_get session)"; base="$(st_get head_before)"
+      for w in $(fanout_workers | jq -c '.[]'); do
+        id="$(jq -r .id <<<"$w")"; path="$(jq -r .path <<<"$w")"; branch="$(jq -r .branch <<<"$w")"
+        [[ -d "$path" ]] || continue
+        ( cd "$path" && git add -A && { git diff --cached --quiet || git commit -qm "harness: worker $id leftovers"; } ) >/dev/null 2>&1 || true
+        status="$(cd "$path" && HARNESS_DIR=.harness "$FL" show "$id" 2>/dev/null | jq -r '.status // ""')"
+        question="$(cd "$path" && HARNESS_DIR=.harness "$FL" show "$id" 2>/dev/null | jq -r '.question // ""')"
+        # proposals the worker filed: re-file them in the main tree
+        if [[ -f "$path/.harness/proposals.json" ]]; then
+          local p known; known="$(jq -c '[.proposals[]?.id]' "$PROPS" 2>/dev/null || echo '[]')"
+          while IFS= read -r p; do
+            [[ -z "$p" ]] && continue
+            jq -c .payload <<<"$p" | "$PLUGIN_ROOT/scripts/backlog.sh" propose --by "$(jq -r .by <<<"$p")" --reason "$(jq -r .reason <<<"$p") (from parallel worker $id)" >/dev/null 2>&1 \
+              || echo "harness: WARNING could not re-file proposal $(jq -r .id <<<"$p") from worker $id" >&2
+          done < <(jq -c --argjson k "$known" --slurpfile base <(git show "$base:.harness/proposals.json" 2>/dev/null || echo '{"proposals":[]}') \
+                      '($base[0].proposals | map(.id)) as $b | .proposals[] | select(.status == "pending" and (.id as $i | $b | index($i) | not))' "$path/.harness/proposals.json")
+        fi
+        # spec and status files never merge: the gate applies the worker's outcome itself
+        ( cd "$path" && git checkout -q "$base" -- .harness/feature_list.json .harness/.feature_list.lock.json .harness/proposals.json 2>/dev/null
+          git add -A .harness && { git diff --cached --quiet || git commit -qm "harness: worker $id: status files are applied by the merge gate"; } ) >/dev/null 2>&1 || true
+        if git merge -q --no-ff --no-edit -m "harness: merge parallel work on $id (session $n)" "$branch" >/dev/null 2>&1; then
+          merged="$merged $id"
+          case "$status" in
+            claimed) "$FL" claim "$id" >/dev/null ;;
+            needs_human) "$FL" ask "$id" "${question:-the parallel worker asked for help}" >/dev/null ;;
+          esac
+        else
+          git merge --abort >/dev/null 2>&1 || git reset -q --merge >/dev/null 2>&1 || true
+          "$FL" fail "$id" "merge conflict with other parallel work in session $n; the next attempt starts from the merged code" >/dev/null
+          conflicts="$conflicts $id"
+          echo "harness: $id conflicted with parallel work; its branch $branch is kept for reference" >&2
+        fi
+        git worktree remove --force "$path" >/dev/null 2>&1 || true
+        [[ " $conflicts " == *" $id "* ]] || git branch -q -D "$branch" >/dev/null 2>&1 || true
+      done
+      git worktree prune >/dev/null 2>&1 || true
+      st_set fanout '[]'
+      emit MERGED "${merged# }"; [[ -n "$conflicts" ]] && emit CONFLICTS "${conflicts# }"
+      fire fanout_merged "session=$n" "merged=${merged# }" "conflicts=${conflicts# }" >&2
+      return 0
+      ;;
+    cleanup) # leftovers of an interrupted fan-out: keep the work on its branch, remove the worktree
+      local d
+      for d in "$WT_DIR"/*/; do
+        [[ -d "$d" ]] || continue
+        ( cd "$d" && git add -A && { git diff --cached --quiet || git commit -qm "harness: interrupted worker leftovers"; } ) >/dev/null 2>&1 || true
+        git worktree remove --force "$d" >/dev/null 2>&1 && echo "harness: removed leftover worktree $d (its branch is kept)" >&2
+      done
+      git worktree prune >/dev/null 2>&1 || true
+      ;;
+    *) die "usage: fanout plan|task <ID>|merge|cleanup" ;;
+  esac
+}
+
 cmd_unlock() { rm -f "$LOCK"; echo "lock removed"; }
 
 cmd_summary() {
@@ -658,6 +786,10 @@ cmd_summary() {
     done
   } > "$out"
   fire run_ended "reason=$reason" "code=$code" "stats=$("$FL" stats)" "rollout=${rollout:-L3}" "branch=$rb" >&2
+  if [[ -f "$HARNESS_DIR/stop.sh" ]]; then   # dev servers etc. that init.sh started
+    if is_trusted; then bash "$HARNESS_DIR/stop.sh" >> "$HARNESS_DIR/sessions/stop.log" 2>&1 < /dev/null || echo "harness: WARNING .harness/stop.sh failed (see sessions/stop.log)" >&2
+    else echo "harness: .harness/stop.sh skipped (not trusted)" >&2; fi
+  fi
   if [[ "$rollout" == L1 && -n "$base" && "$(git branch --show-current 2>/dev/null)" == "$rb" ]]; then
     if [[ -z "$(git status --porcelain)" ]]; then git checkout -q "$base" 2>/dev/null || echo "harness: WARNING could not switch back to $base" >&2
     else echo "harness: WARNING working tree not clean; staying on $rb (switch back with: git checkout $base)" >&2; fi
@@ -678,11 +810,12 @@ case "$cmd" in
   end)         cmd_end ;;
   verify)      cmd_verify ;;
   run-step)    cmd_run_step "$@" ;;
+  fanout)      cmd_fanout "$@" ;;
   summary)     cmd_summary "$@" ;;
   trust)       cmd_trust "$@" ;;
   note)        cmd_note "$@" ;;
   ledger)      cmd_ledger "$@" ;;
   budget)      cmd_budget ;;
   unlock)      cmd_unlock ;;
-  *) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
+  *) sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
 esac

@@ -1,6 +1,6 @@
 # wreck-it-ralph v3: analysis and improvement plan
 
-Status: **Phases 0 and 1 are implemented in v3.0.0, Phase 2 in v3.1.0 Phase 3 in v3.2.0 and Phase 4 in v3.3.0** (2026-11-17). Phase 5 is still a proposal. The plan started from `wreck-it-ralph-loop` v2.1.0.
+Status: **Phases 0 and 1 are implemented in v3.0.0, Phase 2 in v3.1.0 Phase 3 in v3.2.0, Phase 4 in v3.3.0 and Phase 5 in v3.4.0** (2026-11-17). The whole roadmap is implemented. The plan started from `wreck-it-ralph-loop` v2.1.0.
 
 Implementation notes (where v3.0.0 differs from the plan below):
 - State stays in `.harness/` and the config stays `.harness/config.json` (now with `"version": 3`). There is no `.ralph/` directory and no `loop.json` yet. Moving the directory brought churn for existing users and no benefit, so it is deferred until the Phase 3 loop spec needs a new file.
@@ -31,6 +31,16 @@ Implementation notes (where v3.0.0 differs from the plan below):
   - **Notifications.** `notify.sh` (osascript / notify-send / bell) can be used as a hook handler. `setup --notify` wires it up and keeps trust if the config was already trusted. Interactive runs use `PushNotification` when it is available.
   - **Bug fixed:** `summary` used to delete the loop lock even when `begin --new-run` had refused to start (codes 4–7), which could remove another running loop's lock. Refusals now print "Run not started", emit `run_refused`, and leave the lock and `last-run.md` alone.
   - **Not verified:** the GitHub Actions workflow is generated and parsed in the tests, but it has not been run on GitHub.
+- Phase 5, as built:
+  - **Fan-out.** `parallel.max_workers` controls it.
+    - A batch is the next ready feature plus others with disjoint, non-empty `tags`.
+    - Each worker gets a git worktree and branch.
+    - At the merge gate, spec and status files are reset on the worker branch, and the gate applies the worker's claim, question and proposals in the main tree. `progress.md` merges with `merge=union`, set in `.git/info/attributes`. A conflict fails the feature and keeps its branch.
+    - It is **headless only**: interactive subagents cannot be pinned to a worktree directory, so `/run` stays sequential.
+    - The roadmap said the merge gate would rebase and re-run V1/V2 before fast-forwarding. Instead it merges, and the normal verify gate and tester then check every claim. That is equivalent, and it reuses the existing gates.
+  - **Memory.** The curator agent runs every 10 sessions in the default pipeline and writes `learnings.md`, which every agent reads first. `rotate_progress` in `end` keeps the newest ~150 lines once `progress_max_kb` is exceeded.
+  - **Presets and brownfield.** The presets are web, api, cli, data, docs, library (no tester) and none. They set the pipeline and a `preset` field the agents adapt to. `init --brownfield` records existing behaviour as baseline features (`claimed`, `source: baseline`), so the first tester session verifies them.
+  - **Per-step `model`** (in trust) and a gate-run **`.harness/stop.sh`** (covered by trust part 2, which the initializer's finalize step accepts). These fix review findings L2 and L1.
 - Trust now has two parts: the config hash and the verify-command hash. Commands written by the initializer or approved in a proposal are trusted automatically, while repo-supplied ones need `/trust`.
 
 ## 1. The three source ideas

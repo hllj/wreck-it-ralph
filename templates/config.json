@@ -16,6 +16,11 @@
       "agent": "tester",
       "blocking": true,
       "when": "claimed"
+    },
+    {
+      "agent": "curator",
+      "blocking": false,
+      "every": 10
     }
   ],
   "allow_dirty": false,
@@ -29,5 +34,9 @@
     "max_wall_minutes": 0,
     "max_diff_lines": 0,
     "on_large_diff": "warn"
+  },
+  "progress_max_kb": 64,
+  "parallel": {
+    "max_workers": 1
   }
 }

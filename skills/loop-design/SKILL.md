@@ -86,6 +86,16 @@ Recipes (check what is installed with `.harness/doctor.sh`):
 ]
 ```
 
+## 3b. Scale, memory, presets
+
+- **Parallel coders (headless).** Set `"parallel": {"max_workers": 2-4}` and give features disjoint `tags` by area. Only features with non-overlapping tags run together, and a merge conflict simply fails that feature for a retry. Start with 2 workers and add more once merges stay clean.
+- **Memory.** Keep the `curator` step (default every 10 sessions). If agents keep repeating a mistake, run it more often, or add the lesson to `.harness/learnings.md` yourself.
+- **Presets.**
+  - `library` has no tester, so every feature must have `verify` tests.
+  - `api` and `data` make the tester exercise real requests and real outputs.
+- **Existing code.** Use `init --brownfield` so the current behaviour becomes baseline features that guard against regressions.
+- **Cheaper verifiers.** Give the tester and curator a cheaper `model`, and keep the strongest model for the coder.
+
 ## 4. Hooks: let other tools react
 
 Every gate transition is appended to `.harness/events.jsonl` as `{"at", "event", ...}`. These events can be hooked:
@@ -104,6 +114,8 @@ Every gate transition is appended to `.harness/events.jsonl` as `{"at", "event",
 | `step_finished` | a `cmd:` step finished |
 | `proposal_filed` | a backlog proposal was filed |
 | `proposal_approved` | a backlog proposal was approved |
+| `fanout_started` | parallel coders were launched (`features`) |
+| `fanout_merged` | their branches were merged back (`merged`, `conflicts`) |
 
 How handlers work:
 - Handlers are `cmd:` strings. They get the event JSON on stdin and `HARNESS_EVENT`, `HARNESS_FEATURE`, `HARNESS_REASON`, … in the environment.

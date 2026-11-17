@@ -47,7 +47,7 @@ Requirements:
 | Command | What it does |
 |---|---|
 | `setup [--preset web\|cli\|none] [--check] [--refresh] [--force]` | Create or repair the `.harness/` scaffold. Checks prerequisites, writes the preset config, wrappers and `.gitignore` entries. Safe to re-run. |
-| `init "<goal>" [--branch NAME] [--allow-dirty]` | Runs setup, then the **initializer** agent writes `feature_list.json`, `init.sh` and `progress.md`. The spec is then locked and committed. |
+| `init "<goal>" [--brownfield] [--preset P] [--branch NAME] [--allow-dirty]` | Runs setup, then the **initializer** agent writes `feature_list.json`, `init.sh` and `progress.md` (and `stop.sh` if init.sh starts servers). The spec is then locked and committed. `--brownfield` maps an existing codebase first. |
 | `add "<request>" [--approve]` | The **planner** agent turns a request into small, verifiable features and files a **proposal**. You review it (including every verify command) and approve it. Works on any initialized project, at any time. |
 | `backlog [list\|approve\|reject\|answer\|drop\|priority ...]` | Manage the living backlog: approve or reject proposals, answer questions the loop escalated, drop or reprioritize features. |
 | `trust` | Review the repo-supplied config (permissions, commands, MCP servers, custom agents, verify commands) and trust it. |
@@ -76,6 +76,7 @@ begin gate ─▶ coder (fresh) ─▶ verify gate ─▶ tester (fresh) ─▶ 
 | **planner** (`agents/planner.md`) | Runs from `/add`. Decomposes a request into features with `steps`, `verify`, `depends_on`, `tags`, and files them as one proposal. Implements and approves nothing. |
 | **coder** (`agents/coder.md`) | One feature per session. Follows the startup routine (progress, git log, `init.sh` + smoke test, fix breakage first), implements, runs the verify commands, **claims**, commits, logs. It can `ask` a human or propose a split instead of guessing. |
 | **verify gate** (`step.sh verify`) | Runs `verify_static` (from config) and the feature's `verify` commands **in the gate, not in an agent**. If any of them fails, the feature fails and the tester is skipped. Logs go to `.harness/sessions/NNN-verify-<ID>.log`. |
+| **curator** (`agents/curator.md`) | Every 10 sessions (default pipeline), distils `progress.md` and the failure history into `.harness/learnings.md`: commands that work, conventions, approaches that failed, and decisions. Every agent reads it first. |
 | **tester** (`agents/tester.md`) | An independent, skeptical verifier. Exercises the `steps` end to end (Playwright MCP for web), probes beyond them, checks the coder's known issues. It is the only role that marks a feature `passing`. |
 | **custom agents** | Any `.harness/agents/<name>.md`; templates are in `templates/agents/` (`reviewer`, `cleaner`). Add them to the pipeline with `every` / `when`. |
 | **extensions** | Pipeline steps that `use:` another plugin's agent, a skill, a slash command or a gate-run shell command. See "Working with other plugins". |
@@ -139,6 +140,57 @@ Every agent run is recorded in `.harness/ledger.jsonl`, which is git-ignored.
 - `0` means unlimited.
 - The gates check the caps before every session and after it ends.
 - `/status`, the per-session log lines and `.harness/last-run.md` show what was spent. `.harness/step.sh ledger total` prints the totals.
+
+## Scale and reach
+
+### Parallel coders (headless)
+
+```json
+"parallel": { "max_workers": 3 }
+```
+
+With `max_workers > 1`, the headless runner fans the coder step out over **git worktrees** (`.harness/worktrees/<id>`, git-ignored).
+
+- **Batch selection.** The batch is the next ready feature plus further ready features whose `tags` are disjoint from the batch. Untagged features never run in parallel, because their area is unknown, so tag features (`api`, `ui`, `db`, …) to allow it.
+- **Workers.** Each worker is a fresh headless coder on its own `harness/wt-<session>-<id>` branch. It is told to stay inside its feature, and it gets an equal share of the remaining budget.
+- **Merge gate.** After all workers finish, each branch is merged into the main tree.
+  - The spec and status files never merge. The gate applies each worker's claim, question or proposals itself, so the spec lock stays intact.
+  - `progress.md` uses git's union merge.
+  - A merge conflict fails only that feature, with a note. The branch is kept for reference, and the next attempt starts from the merged code.
+- **After the merge.** The verify gate and the tester then check all the claims as usual.
+- **Interruptions.** Worktrees left by an interrupted run are cleaned up at the next run, and their work is committed to their branch first.
+
+Interactive runs stay sequential, because subagents cannot be pinned to a worktree's directory reliably.
+
+### Memory
+
+- **`learnings.md`** is short and curated, and every agent reads it before `progress.md`. The curator rewrites it every 10 sessions.
+- **`progress.md` rotation.** Over `progress_max_kb` (default 64), the gate moves older entries to `progress/archive-NNN.md`, split at an entry heading, and keeps the newest ~150 lines.
+- **`attempts[]`** on each feature keeps the failure history that both of these draw on.
+
+### Presets and existing projects
+
+`setup --preset` / `init --preset`:
+
+| Preset | Pipeline | Guidance for the initializer and tester |
+|---|---|---|
+| `web` | coder → tester (+ Playwright MCP) → curator | steps are browser interactions |
+| `api` | coder → tester → curator | steps are HTTP requests with expected status and body |
+| `cli` | coder → tester → curator | run the command, check output and exit code |
+| `data` | coder → tester → curator | run pipelines on fixed samples, check outputs |
+| `docs` | coder → tester → curator | features are pages; verify by building the docs and checking links |
+| `library` | coder → curator (no tester) | every feature needs `verify` tests: the verify gate is the verifier |
+| `none` | coder | |
+
+`init --brownfield "<goal>"` maps an existing codebase:
+- `init.sh` is written from the real build and run commands, and no product code changes.
+- The essential behaviour that already works is recorded as **baseline** features (`status: claimed`, `source: baseline`). The tester verifies them in session 1, and after that they guard against regressions.
+- The goal's new work comes after them as `todo` features.
+
+### Per-step models and cleanup
+
+- **Models:** `"model"` on a pipeline step (for example `{ "agent": "tester", "when": "claimed", "model": "haiku" }`) overrides the global model for that step. Interactive runs accept `sonnet`, `opus`, `haiku` and `fable`; headless runs pass any model name to `claude -p`.
+- **`.harness/stop.sh`:** written by the initializer when `init.sh` starts servers. The gate runs it when a loop ends, and it is covered by trust.
 
 ## Rollout, triggers and intake
 

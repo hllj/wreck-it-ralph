@@ -8,6 +8,8 @@
 # Usage: feature-list.sh <command> [args]
 #   list [--failing | --status S]   list features (id, STATUS, description)
 #   next                    highest-priority READY feature (todo/failing, dependencies passing)
+#   batch <N>               up to N ready features that can be built in parallel: the next one, plus
+#                           others whose tags are disjoint from the batch (untagged features never fan out)
 #   stats                   "<passing>/<total> passing (<claimed> awaiting verification)[, <n> need a human]"
 #   show <ID>               print one feature as JSON
 #   claim <ID>              coder: implementation done, awaiting verification
@@ -104,6 +106,17 @@ case "$cmd" in
     ;;
   next)
     q '(statuses) as $s | [.features[] | ready($s)] | sort_by(.priority // 999, .id) | .[0] // empty | "\(.id)\t\(.description)"'
+    ;;
+  batch)
+    [[ "${1:-}" =~ ^[0-9]+$ ]] || die "usage: batch <N>"
+    q '(statuses) as $s | ([.features[] | ready($s)] | sort_by(.priority // 999, .id)) as $r
+       | if ($r | length) == 0 then empty else
+         reduce $r[1:][] as $f ({b: [$r[0]], tags: ($r[0].tags // []), open: ((($r[0].tags // []) | length) > 0)};
+            if (.open | not) or (.b | length) >= $max then .
+            elif (($f.tags // []) | length) == 0 then .
+            elif (.tags as $u | [($f.tags // [])[] | select(. as $x | $u | index($x))] | length) > 0 then .
+            else .b += [$f] | .tags += ($f.tags // []) end)
+         | .b[].id end' --argjson max "$1"
     ;;
   stats)
     q '[.features[] | live] as $f

@@ -83,7 +83,7 @@ new_project 3
 S=.harness/step.sh
 OUT="$($S begin --new-run)"
 check "begin continues with session 1 + target" 'grep -q "^DECISION=continue" <<<"$OUT" && grep -q "^SESSION=1$" <<<"$OUT" && grep -q "^TARGET=F001$" <<<"$OUT"'
-check "plan lists coder then tester" '[[ "$($S plan | cut -f1 | tr "\n" " ")" == "coder tester " ]]'
+check "plan lists coder, tester, curator" '[[ "$($S plan | cut -f1 | tr "\n" " ")" == "coder tester curator " ]]'
 check "task for coder names the target" 'out_has "Target feature: F001" $S task coder'
 check "tester task skipped when nothing claimed" 'out_has "^SKIP: nothing claimed" $S task tester'
 check "spawn-info: plugin agent type" 'out_has "^TYPE=wreck-it-ralph:coder$" $S spawn-info coder'
@@ -120,7 +120,7 @@ check "--check passes with tools present"   '$SETUP --check >/dev/null'
 $SETUP --preset web --max-sessions 7 >$LOGD/s1.log 2>&1
 check "web preset: playwright mcp enabled"  '[[ "$(jq -r .mcp_config .harness/config.json)" == .harness/mcp.json && -f .harness/mcp.json ]]'
 check "max-sessions applied"                '[[ "$(jq .max_sessions .harness/config.json)" == 7 ]]'
-check "pipeline coder -> tester"            '[[ "$(jq -r "[.pipeline[].agent]|join(\",\")" .harness/config.json)" == coder,tester ]]'
+check "pipeline coder -> tester -> curator"  '[[ "$(jq -r "[.pipeline[].agent]|join(\",\")" .harness/config.json)" == coder,tester,curator ]]'
 check "wrappers created incl. step.sh"      '[[ -x .harness/step.sh && -x .harness/run.sh && -x .harness/feature-list.sh && -x .harness/status.sh ]]'
 check "git repo initialized"                'git rev-parse --git-dir >/dev/null 2>&1'
 check "project gitignore has playwright dir" 'grep -qxF ".playwright-mcp/" .gitignore && grep -qxF ".env" .gitignore'
@@ -709,6 +709,98 @@ check "intake skips imported issues"          'J="$(GH_ARGS_LOG=$LOGD/gh2.args P
 check "intake validates ids and repo"         '! $I mark "x; rm" >/dev/null 2>&1 && ! PATH="$GHB:$PATH" $I github --repo "bad repo" >/dev/null 2>&1'
 echo '{"add":[{"description":"csv","steps":["x"],"verify":["npm test -- csv"]}]}' | .harness/backlog.sh propose --by intake:github#12 --reason "Export CSV" >/dev/null 2>&1
 check "approving intake proposals warns about verify commands" '.harness/backlog.sh approve P001 >/dev/null 2>$LOGD/ia.err; grep -q "derived from an external issue" $LOGD/ia.err && grep -q "npm test -- csv" $LOGD/ia.err'
+
+echo "phase 5: per-step model, stop.sh, memory"
+new_project 1
+S=.harness/step.sh
+set_trusted_cfg '.pipeline[1].model = "haiku"'
+check "spawn-info reports a per-step model"   'out_has "^MODEL=haiku$" $S spawn-info tester && ! out_has "^MODEL=" $S spawn-info coder'
+check "per-step model is part of trust"       'jq ".pipeline[1].model=\"opus\"" .harness/config.json > .harness/c && mv .harness/c .harness/config.json; ! $S trust status >/dev/null 2>&1'
+$S trust accept >/dev/null; git add -A; git commit -qm m >/dev/null
+FAKE_ARGS_LOG=$LOGD/m.args .harness/run.sh >/dev/null 2>&1
+check "headless passes the step model"        'grep -q -- "--model opus" $LOGD/m.args && [[ "$(grep -c -- "--model" $LOGD/m.args)" == 1 ]]'
+new_project 1
+printf '#!/bin/bash\necho stopped > stopped.txt\n' > .harness/stop.sh; chmod +x .harness/stop.sh; echo stopped.txt >> .gitignore
+check "stop.sh needs trust"                   '! .harness/step.sh trust status >/dev/null 2>&1 && out_has "echo stopped" .harness/step.sh trust show'
+"$ROOT/scripts/harness-setup.sh" --finalize >/dev/null 2>&1
+check "finalize trusts the initializer's stop.sh" '.harness/step.sh trust status >/dev/null 2>&1'
+.harness/run.sh >/dev/null 2>&1
+check "the gate runs stop.sh when a run ends" '[[ "$(cat stopped.txt)" == stopped ]]'
+check "learnings.md is scaffolded"            '[[ -f .harness/learnings.md ]] && grep -q "curator" .harness/learnings.md'
+check "curator is in the default pipeline"    'jq -e "any(.pipeline[]; .agent == \"curator\" and .every == 10)" .harness/config.json >/dev/null && [[ -f "$ROOT/agents/curator.md" ]]'
+check "agents read learnings first"           'grep -q "learnings.md" "$ROOT/agents/coder.md" && grep -q "learnings.md" "$ROOT/agents/tester.md" && grep -q "learnings.md" "$ROOT/agents/planner.md"'
+new_project 1
+S=.harness/step.sh
+set_trusted_cfg '.progress_max_kb = 1'
+{ for i in $(seq 1 120); do printf '## Session %s\nline a\nline b\n\n' "$i"; done; } >> .harness/progress.md; git add -A; git commit -qm big >/dev/null
+$S begin --new-run >/dev/null 2>&1; $S end >/dev/null 2>$LOGD/rot.err
+check "progress.md rotates past progress_max_kb" '[[ -f .harness/progress/archive-001.md ]] && [[ "$(wc -l < .harness/progress.md | tr -d " ")" -le 160 ]] && grep -q "Session 120" .harness/progress.md && grep -q "Session 1$" .harness/progress/archive-001.md'
+check "rotation splits at an entry heading"   'sed -n 5p .harness/progress.md | grep -q "^## Session"'
+check "rotation is committed"                 '[[ -z "$(git status --porcelain)" ]] && git ls-files .harness/progress | grep -q archive-001.md'
+
+echo "phase 5: presets and brownfield"
+SETUP="$ROOT/scripts/harness-setup.sh"
+P="$(mktemp -d)"; cd "$P"; git init -q; $SETUP --preset library >/dev/null 2>&1
+check "library preset: no tester, verify gate verifies" '[[ "$(jq -r "[.pipeline[].agent]|join(\",\")" .harness/config.json)" == coder,curator && "$(jq -r .preset .harness/config.json)" == library ]]'
+P="$(mktemp -d)"; cd "$P"; git init -q; $SETUP --preset api >/dev/null 2>&1
+check "api preset: tester without browser"    '[[ "$(jq -r "[.pipeline[].agent]|join(\",\")" .harness/config.json)" == coder,tester,curator && -z "$(jq -r .mcp_config .harness/config.json)" && "$(jq -r .preset .harness/config.json)" == api ]]'
+for pr in data docs cli; do P="$(mktemp -d)"; cd "$P"; git init -q; $SETUP --preset $pr >/dev/null 2>&1; done
+check "data/docs/cli presets are accepted"    '[[ "$(jq -r .preset .harness/config.json)" == cli ]]'
+check "initializer knows presets and brownfield" 'grep -q "^## Presets" "$ROOT/agents/initializer.md" && grep -q "BROWNFIELD" "$ROOT/agents/initializer.md" && grep -q "\"source\": \"baseline\"" "$ROOT/agents/initializer.md" && grep -q -- "--brownfield" "$ROOT/commands/init.md"'
+new_project 2
+FL=.harness/feature-list.sh; S=.harness/step.sh
+jq '.features[0].status="claimed" | .features[0].source="baseline"' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json; $FL lock >/dev/null; git add -A; git commit -qm base >/dev/null
+$S begin --new-run >/dev/null 2>&1
+check "baseline (claimed) features go to the tester first" 'out_has "awaiting verification: F001" $S task tester && out_has "Target feature: F002" $S task coder'
+$S end >/dev/null 2>&1
+
+echo "phase 5: parallel fan-out"
+tagged_project() { # tags for F001..F00n
+  new_project "$#"; local i=0 t
+  for t in "$@"; do jq --argjson i $i --arg t "$t" 'if $t == "-" then . else .features[$i].tags = [$t] end' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json; i=$((i + 1)); done
+  .harness/feature-list.sh lock >/dev/null; git add -A; git commit -qm tags >/dev/null
+}
+tagged_project api ui db api -
+FL=.harness/feature-list.sh
+check "batch takes features with disjoint tags" '[[ "$($FL batch 3 | tr "\n" " ")" == "F001 F002 F003 " ]]'
+check "batch respects the worker limit"       '[[ "$($FL batch 2 | tr "\n" " ")" == "F001 F002 " ]]'
+check "batch of 1 is no fan-out"              '[[ "$($FL batch 1 | tr "\n" " ")" == "F001 " ]]'
+tagged_project - ui db
+check "untagged target never fans out"        '[[ "$(.harness/feature-list.sh batch 3 | tr "\n" " ")" == "F001 " ]]'
+tagged_project api ui db api
+set_trusted_cfg '.parallel.max_workers = 3'
+.harness/run.sh --max-sessions 1 >$LOGD/f1.log 2>&1
+check "fan-out runs coders in parallel worktrees" 'grep -q "3 coders in parallel" $LOGD/f1.log && grep -q "merged: F001 F002 F003" $LOGD/f1.log'
+check "merged features are verified and pass"  '.harness/feature-list.sh list | grep -c "	PASS	" | grep -qx 3 && [[ "$(st_of F004)" == TODO ]]'
+check "worker code is merged into the main tree" '[[ -f src_F001.txt && -f src_F002.txt && -f src_F003.txt ]] && out_has "merge parallel work on F002" git log --oneline'
+check "worktrees and worker branches are cleaned up" '[[ "$(git worktree list | wc -l | tr -d " ")" == 1 ]] && [[ -z "$(git branch --list "harness/wt-*")" ]] && [[ -z "$(git status --porcelain)" ]]'
+check "spec stays locked after merges"        '.harness/feature-list.sh verify-lock'
+check "per-worker logs and ledger entries"    '[[ -f .harness/sessions/001-coder-F002.log ]] && [[ "$(jq -s "[.[] | select(.agent==\"coder\")] | length" .harness/ledger.jsonl)" == 3 ]]'
+check "fan-out events"                        'jq -e "select(.event==\"fanout_started\" and .features==\"F001 F002 F003\")" .harness/events.jsonl >/dev/null && jq -e "select(.event==\"fanout_merged\")" .harness/events.jsonl >/dev/null'
+tagged_project api ui
+set_trusted_cfg '.parallel.max_workers = 2'
+FAKE_MODE=conflict .harness/run.sh --max-sessions 1 >$LOGD/f2.log 2>&1
+check "a conflicting worker fails, the other merges" 'grep -q "merged: F001" $LOGD/f2.log && grep -q "conflicts (retried later): F002" $LOGD/f2.log && [[ "$(st_of F001)" == PASS && "$(st_of F002)" == FAIL ]]'
+check "conflict note explains the retry"      'jq -r ".features[1].notes" .harness/feature_list.json | grep -q "merge conflict with other parallel work" && git branch --list "harness/wt-1-F002" | grep -q F002'
+check "tree is clean after a conflict"        '[[ -z "$(git status --porcelain)" ]]'
+tagged_project api ui db
+set_trusted_cfg '.parallel.max_workers = 3'
+FAKE_MODE=workerask .harness/run.sh --max-sessions 1 >$LOGD/f3.log 2>&1
+check "a worker's question reaches the main tree" '[[ "$(st_of F002)" == NEEDS_HUMAN ]] && out_has "need an API key" .harness/feature-list.sh questions'
+tagged_project api ui db
+set_trusted_cfg '.parallel.max_workers = 3'
+FAKE_MODE=workerpropose .harness/run.sh --max-sessions 1 >$LOGD/f4.log 2>&1
+check "a worker's proposal is re-filed in the main tree" 'out_has "split F003 (from parallel worker F003)" .harness/backlog.sh list'
+tagged_project api ui
+S=.harness/step.sh
+set_trusted_cfg '.parallel.max_workers = 2'
+$S begin --new-run >/dev/null 2>&1; $S fanout plan >/dev/null 2>&1
+echo wip > .harness/worktrees/F002/wip.txt
+$S unlock >/dev/null; jq '.fanout = []' .harness/.step_state.json > .harness/st && mv .harness/st .harness/.step_state.json
+$S begin --new-run >/dev/null 2>$LOGD/f5.err
+check "a new run cleans up interrupted worktrees, keeping the work" 'grep -q "removed leftover worktree" $LOGD/f5.err && [[ ! -d .harness/worktrees/F002 ]] && out_has "interrupted worker leftovers" git log --oneline harness/wt-1-F002'
+$S unlock >/dev/null
+check "worktrees dir is git-ignored"          'grep -qxF "worktrees/" .harness/.gitignore'
 
 echo; echo "passed: $PASS  failed: $FAIL"
 [[ $FAIL -eq 0 ]]

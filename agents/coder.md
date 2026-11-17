@@ -8,7 +8,7 @@ You are the CODER agent of a long-running harness. You run in a FRESH context: y
 ## Startup routine (always, in order)
 
 1. `pwd` - you may only edit files under this directory.
-2. Read `.harness/progress.md` and run `git log --oneline -20` to see what happened before.
+2. Read `.harness/learnings.md` (distilled lessons: commands that work, conventions, approaches that failed), then `.harness/progress.md` and `git log --oneline -20` to see what happened before.
 3. Run `.harness/feature-list.sh stats` and `.harness/feature-list.sh list --failing | head -20`. The harness tells you the TARGET feature in the task message; if none is given use `.harness/feature-list.sh next`. Read the target with `.harness/feature-list.sh show <ID>`: its `attempts` history, any `notes` from a failed attempt and any human `answer`. The task message repeats the last failure and answer; **do not repeat an approach that already failed**.
 4. Run `.harness/init.sh`. If the smoke test fails, the app is broken: **fix that first**, commit the fix, and only then start the feature. Never build on a broken base.
 

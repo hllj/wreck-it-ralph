@@ -21,6 +21,11 @@ if [[ "$SYS" == *"CODER agent"* ]]; then
   [[ "${FAKE_MODE:-}" == "idle" ]] && { echo "did nothing"; exit 0; }
   [[ "${FAKE_MODE:-}" == "stop" ]] && touch .harness/STOP
   if [[ "${FAKE_MODE:-}" == "tamper" ]]; then jq '.features[0].description = "TAMPERED"' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json; fi
+  [[ "${FAKE_MODE:-}" == "conflict" && -n "$TARGET" ]] && echo "shared by $TARGET" > shared.txt
+  if [[ "${FAKE_MODE:-}" == "workerask" && "$TARGET" == "F002" ]]; then $FL ask F002 "need an API key" >/dev/null; echo "asked"; exit 0; fi
+  if [[ "${FAKE_MODE:-}" == "workerpropose" && "$TARGET" == "F003" ]]; then
+    echo '{"add":[{"description":"follow-up from F003","steps":["x"]}]}' | .harness/backlog.sh propose --by coder --reason "split F003" >/dev/null
+  fi
   [[ -n "$TARGET" ]] && { echo "impl $TARGET" > "src_$TARGET.txt"; git add -A; git commit -qm "feat: $TARGET"; $FL claim "$TARGET" >/dev/null; }
   [[ "${FAKE_MODE:-}" == "selfpass" && -n "$TARGET" ]] && $FL pass "$TARGET" >/dev/null
   [[ "${FAKE_MODE:-}" == "dirty" ]] && echo junk > leftover.txt
