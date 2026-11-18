@@ -15,17 +15,75 @@ It also ships the original in-session **Ralph loop** (`/wreck-it-ralph:ralph`) f
 
 ## Install
 
+The repository is its own one-plugin marketplace (`.claude-plugin/marketplace.json`), so Claude Code can install it straight from GitHub or from a local checkout.
+
+### Requirements
+
+- **Claude Code 2.1.275 or later** for the one-step `--marketplace` install. Older versions can use the two-step form below. Check with `claude --version`.
+- **`bash`**, **`git`** with `user.name` and `user.email` set, and **`jq`**.
+- **macOS or Linux.** Windows isn't supported, because the scripts need bash and POSIX tools; WSL may work but is untested.
+- **Optional:** `gh` (for issue intake and pull requests at rollout L2) and `npx` (for the Playwright browser tester in the `web` preset).
+
+### From GitHub
+
+In Claude Code:
+
 ```
-/plugin install wreck-it-ralph --marketplace <owner>/<repo>
+/plugin install wreck-it-ralph --marketplace <owner>/wreck-it-ralph
 ```
 
-Replace `<owner>/<repo>` with the marketplace that hosts the plugin, or try it locally with `claude --plugin-dir /path/to/wreck-it-ralph`.
+Replace `<owner>/wreck-it-ralph` with the GitHub repository that hosts this plugin. The same thing from a terminal:
 
-Requirements:
-- `bash`
-- `git`, with `user.name`/`user.email` set
-- `jq`
-- macOS or Linux (Windows: use WSL, see below)
+```bash
+claude plugin install wreck-it-ralph --marketplace <owner>/wreck-it-ralph
+```
+
+On an older Claude Code, add the marketplace first, then install from it:
+
+```
+/plugin marketplace add <owner>/wreck-it-ralph
+/plugin install wreck-it-ralph@wreck-it-ralph
+```
+
+### From a local checkout
+
+To install it permanently from a folder on disk:
+
+```bash
+claude plugin install wreck-it-ralph --marketplace /path/to/wreck-it-ralph
+```
+
+A folder install is read live from that folder, so there is nothing to update: edits take effect at the next session, or straight away with `/reload-plugins`.
+
+To try it for a single session without installing anything:
+
+```bash
+claude --plugin-dir /path/to/wreck-it-ralph
+```
+
+### Scope
+
+Installs go to your user settings by default, so the plugin is available in every project. Add `--scope project` to record it in the project's `.claude/settings.json`, so everyone on the repository gets it. `--scope local` keeps it to this project on your machine.
+
+### Check that it works
+
+In Claude Code, run `/wreck-it-ralph:help`. Then, inside a project, run `/wreck-it-ralph:setup --check` to verify the prerequisites, or `/wreck-it-ralph:doctor` once a harness exists.
+
+### Update or remove
+
+For a GitHub install:
+
+```bash
+claude plugin update wreck-it-ralph@wreck-it-ralph
+```
+
+To uninstall (either kind):
+
+```bash
+claude plugin uninstall wreck-it-ralph@wreck-it-ralph
+```
+
+After an update, run `/wreck-it-ralph:setup --refresh` in each project. `/wreck-it-ralph:run` also does this when it starts, so the `.harness/*.sh` wrappers point at the new copy. Uninstalling leaves each project's `.harness/` folder in place.
 
 > Upgrading from `wreck-it-ralph-loop` 2.x:
 > - Commands are now shorter (`/wreck-it-ralph:run` instead of `/wreck-it-ralph-loop:harness-run`).
