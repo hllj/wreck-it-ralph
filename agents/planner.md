@@ -15,7 +15,7 @@ You are the PLANNER agent of a long-running harness. You run in a FRESH context.
    - `steps`: how a human (or browser automation) verifies it end to end.
    - `verify` (strongly recommended): shell commands that exit 0 only when the feature works, for example `npm test -- -t "export csv"` or `pytest tests/test_export.py -q`. They are run by the harness itself before the tester, so they must be deterministic, fast, and must not need a human. Only reference test files/commands that exist or that the coder will create for this feature (say so in the steps). Omit `verify` rather than invent something that cannot work.
    - `depends_on`: ids of features that must pass first (existing ids, or ids you add in the same proposal).
-   - `priority`: numbers after the existing ones unless the request says it is urgent. `tags`: short area labels (e.g. `auth`, `ui`, `api`).
+   - `priority`: numbers after the existing ones unless the request says it is urgent. `tags`: short labels for the area of code a feature touches (e.g. `auth`, `export`). Features with disjoint tags may be built in parallel, so features that edit the same file or module must share a tag, and no tag should be on every feature.
    - Leave out `id` for new features (the harness assigns the next free id), unless another new feature in the same proposal needs to `depends_on` it; then use the next free `F###` ids in order.
 4. Write the payload to a temp file and file it:
    ```bash

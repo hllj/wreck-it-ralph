@@ -767,6 +767,9 @@ check "batch respects the worker limit"       '[[ "$($FL batch 2 | tr "\n" " ")"
 check "batch of 1 is no fan-out"              '[[ "$($FL batch 1 | tr "\n" " ")" == "F001 " ]]'
 tagged_project - ui db
 check "untagged target never fans out"        '[[ "$(.harness/feature-list.sh batch 3 | tr "\n" " ")" == "F001 " ]]'
+new_project 4
+jq '.features[0].tags=["cli","counting"] | .features[1].tags=["cli","counting"] | .features[2].tags=["cli","ranking"] | .features[3].tags=["cli"]' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json
+check "a tag shared by every feature is ignored" '[[ "$(.harness/feature-list.sh batch 3 | tr "\n" " ")" == "F001 F003 " ]]'
 tagged_project api ui db api
 set_trusted_cfg '.parallel.max_workers = 3'
 .harness/run.sh --max-sessions 1 >$LOGD/f1.log 2>&1
@@ -777,12 +780,16 @@ check "worktrees and worker branches are cleaned up" '[[ "$(git worktree list | 
 check "spec stays locked after merges"        '.harness/feature-list.sh verify-lock'
 check "per-worker logs and ledger entries"    '[[ -f .harness/sessions/001-coder-F002.log ]] && [[ "$(jq -s "[.[] | select(.agent==\"coder\")] | length" .harness/ledger.jsonl)" == 3 ]]'
 check "fan-out events"                        'jq -e "select(.event==\"fanout_started\" and .features==\"F001 F002 F003\")" .harness/events.jsonl >/dev/null && jq -e "select(.event==\"fanout_merged\")" .harness/events.jsonl >/dev/null'
-tagged_project api ui
+tagged_project api ui db
 set_trusted_cfg '.parallel.max_workers = 2'
 FAKE_MODE=conflict .harness/run.sh --max-sessions 1 >$LOGD/f2.log 2>&1
-check "a conflicting worker fails, the other merges" 'grep -q "merged: F001" $LOGD/f2.log && grep -q "conflicts (retried later): F002" $LOGD/f2.log && [[ "$(st_of F001)" == PASS && "$(st_of F002)" == FAIL ]]'
-check "conflict note explains the retry"      'jq -r ".features[1].notes" .harness/feature_list.json | grep -q "merge conflict with other parallel work" && git branch --list "harness/wt-1-F002" | grep -q F002'
+check "a conflicting worker is requeued, the other merges" 'grep -q "merged: F001" $LOGD/f2.log && grep -q "conflicts (retried later): F002" $LOGD/f2.log && [[ "$(st_of F001)" == PASS && "$(st_of F002)" == TODO ]]'
+check "a merge conflict is not counted as a failure" '[[ "$(.harness/feature-list.sh failures F002)" == 0 ]] && jq -r ".features[1].notes" .harness/feature_list.json | grep -q "merge conflict with other parallel work"'
+check "the conflicting branch is kept for reference" 'git branch --list "harness/wt-1-F002" | grep -q F002'
 check "tree is clean after a conflict"        '[[ -z "$(git status --porcelain)" ]]'
+check "a requeued feature is not fanned out as an extra worker" '[[ "$(.harness/feature-list.sh batch 2 | tr "\n" " ")" == "F002 " ]]'
+.harness/run.sh --max-sessions 1 >$LOGD/f2b.log 2>&1
+check "its kept branch is deleted once it passes" '[[ "$(st_of F002)" == PASS ]] && [[ -z "$(git branch --list "harness/wt-*-F002")" ]]'
 tagged_project api ui db
 set_trusted_cfg '.parallel.max_workers = 3'
 FAKE_MODE=workerask .harness/run.sh --max-sessions 1 >$LOGD/f3.log 2>&1

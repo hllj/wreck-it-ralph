@@ -215,7 +215,7 @@ ledger_totals() { # -> "cost tokens runs" for the current run (state .run)
   local run; run="$(st_get run)"
   if [[ -z "$run" || ! -f "$LEDGER" ]]; then echo "0 0 0"; return 0; fi
   jq -rs --argjson run "$run" '[.[] | select(.run == $run)] as $e
-    | "\([$e[].cost_usd // 0] | add // 0) \([$e[] | (.input_tokens // 0) + (.output_tokens // 0) + (.tokens // 0)] | add // 0) \($e | length)"' "$LEDGER" 2>/dev/null || echo "0 0 0"
+    | "\([$e[].cost_usd // 0] | add // 0 | . * 10000 | round / 10000) \([$e[] | (.input_tokens // 0) + (.output_tokens // 0) + (.tokens // 0)] | add // 0) \($e | length)"' "$LEDGER" 2>/dev/null || echo "0 0 0"
 }
 run_minutes() { local run; run="$(st_get run)"; if [[ -n "$run" ]]; then echo $(( ($(date +%s) - run) / 60 )); else echo 0; fi; }
 
@@ -569,7 +569,11 @@ cmd_end() {
     done
   fi
   local since fid2; since="$(st_get session_started_at)"
-  for fid2 in $(newly_passing); do fire feature_passed "feature=$fid2" "session=$n" >&2; done
+  for fid2 in $(newly_passing); do
+    fire feature_passed "feature=$fid2" "session=$n" >&2
+    # branches kept from merge conflicts are no longer needed once the feature passes
+    git for-each-ref --format='%(refname:short)' "refs/heads/harness/wt-*-$fid2" | while IFS= read -r b; do git branch -q -D "$b" >/dev/null 2>&1 || true; done
+  done
   for fid2 in $(jq -r --arg since "${since:-0}" '.features[] | select((.status // "") != "passing" and any((.attempts // [])[]; .event == "fail" and (.at // "") >= $since)) | .id' "$HARNESS_DIR/feature_list.json"); do
     fire feature_failed "feature=$fid2" "session=$n" "note=$(jq -r --arg id "$fid2" '.features[] | select(.id == $id) | .notes // "" | .[0:300]' "$HARNESS_DIR/feature_list.json")" >&2
   done
@@ -715,7 +719,7 @@ You are one of $total coders building different features at the same time, each 
           esac
         else
           git merge --abort >/dev/null 2>&1 || git reset -q --merge >/dev/null 2>&1 || true
-          "$FL" fail "$id" "merge conflict with other parallel work in session $n; the next attempt starts from the merged code" >/dev/null
+          "$FL" requeue "$id" "merge conflict with other parallel work in session $n; the next attempt starts from the merged code and runs without parallel neighbours" >/dev/null
           conflicts="$conflicts $id"
           echo "harness: $id conflicted with parallel work; its branch $branch is kept for reference" >&2
         fi

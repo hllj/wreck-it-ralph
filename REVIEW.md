@@ -125,3 +125,24 @@ Fix: add `step.sh note <agent> <text>` so the orchestrator appends one line per 
 1. **Tester passed a feature despite a reported defect.** The coder noted that `ß`/`ø` were dropped, which contradicts "accented characters are transliterated", yet the tester passed it because every listed step worked. Fix: the tester prompt now requires reading "Known issues", probing 3-5 inputs beyond the steps, and failing on any contradiction; the coder prompt says to claim only complete work.
 2. **Wrapper scripts were committed** (they contain machine-specific plugin paths). Fix: wrappers are git-ignored via a shared `scripts/harness-ignores.sh`, and wrappers that an older version already committed are untracked automatically at the next loop start.
 3. **Language ignores were detected too early** (before any source file existed). Fix: ignore detection is re-run at every `begin --new-run`, and its messages go to stderr so the gate output stays machine-readable.
+
+## Follow-up: live trial of v3.4.0 (2026-11-18, all fixed in v3.4.1)
+
+**Setup.**
+- **Project:** `textstats`, a small Python CLI, with the `cli` preset.
+- **Initializer:** the real one, run via `claude -p`.
+- **Loop:** headless `run.sh` with real coder and tester agents on `sonnet`, `max_cost_usd` 4, 4 sessions, `parallel.max_workers` 2.
+
+**Result.**
+- 4/5 features passed, independently verified, in 4 sessions and about 3 minutes.
+- Cost $1.44 for the loop (10 agent runs at $0.12–0.17 each) plus $0.32 for the initializer.
+- The ledger, budget, verify gate, events, worktree cleanup and a clean tree all behaved as designed.
+- The tester probed well beyond the listed steps: CRLF, unicode, binary input, directories, negative N, and regressions.
+
+**Findings.**
+1. **The initializer installed pytest into the global Homebrew Python** (`pip install --break-system-packages`), because the non-interactive `python3` was a different interpreter without pytest. Fix: the initializer and coder prompts now require project-local installs only (`.venv`, `node_modules`, …), never `sudo`, `--user`, `--break-system-packages` or `-g`, and say to fail or `ask` instead.
+2. **Fan-out never triggered,** because every feature was tagged `cli`. Fix: batch selection ignores tags shared by every live feature. The prompts now say not to add catch-all tags, and that features editing the same file must share a tag.
+3. **Merge conflicts counted as failures.** F004 reached 2 of the 3 failures that trigger escalation, purely from conflicts. Fix: a new `feature-list.sh requeue`; a conflict now requeues the feature without counting a failure.
+4. **A conflicted feature was fanned out again at once and conflicted again,** wasting about $0.34. Fix: a requeued feature never joins a parallel batch, and when it is the target it runs alone.
+5. **Branches kept from conflicts accumulated.** Fix: they are deleted once the feature passes.
+6. **Display.** Spend printed as `$1.4395422999999998`, and passing features kept a stale conflict note in the summary table. Fix: totals are rounded, and notes are shown only for features that are not passing.

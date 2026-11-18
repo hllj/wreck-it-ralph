@@ -16,6 +16,8 @@
 #   pass <ID>               tester (or runner when no tester): verified end-to-end
 #   fail <ID> [note]        verification failed; records the note in the attempt history
 #   ask <ID> <question>     escalate: the feature needs a human decision (status needs_human)
+#   requeue <ID> <note>     gate: put a feature back in the queue without counting a failure
+#                           (a parallel worker's merge conflict); it then runs alone, never in a parallel batch
 #   answer <ID> <text>      human: answer the question; the feature becomes ready again
 #   questions               print "<id>\t<question>" for every feature that needs a human
 #   claimed                 print ids of claimed (unverified) features
@@ -109,13 +111,20 @@ case "$cmd" in
     ;;
   batch)
     [[ "${1:-}" =~ ^[0-9]+$ ]] || die "usage: batch <N>"
-    q '(statuses) as $s | ([.features[] | ready($s)] | sort_by(.priority // 999, .id)) as $r
+    # A tag that every live feature carries (e.g. "cli" in a CLI project) says nothing about
+    # the area a feature touches, so it is ignored when checking for overlap.
+    q '([.features[] | live | (.tags // [])]) as $all
+       | (if ($all | length) > 1 then reduce $all[1:][] as $t ($all[0]; . - (. - $t)) else [] end) as $common
+       | def area: (.tags // []) - $common;
+       (statuses) as $s | ([.features[] | ready($s)] | sort_by(.priority // 999, .id)) as $r
        | if ($r | length) == 0 then empty else
-         reduce $r[1:][] as $f ({b: [$r[0]], tags: ($r[0].tags // []), open: ((($r[0].tags // []) | length) > 0)};
+         reduce $r[1:][] as $f ({b: [$r[0]], tags: ($r[0] | area),
+                                 open: ((($r[0] | area | length) > 0) and (any(($r[0].attempts // [])[]; .event == "requeue") | not))};
             if (.open | not) or (.b | length) >= $max then .
-            elif (($f.tags // []) | length) == 0 then .
-            elif (.tags as $u | [($f.tags // [])[] | select(. as $x | $u | index($x))] | length) > 0 then .
-            else .b += [$f] | .tags += ($f.tags // []) end)
+            elif ($f | area | length) == 0 then .
+            elif any(($f.attempts // [])[]; .event == "requeue") then .
+            elif (.tags as $u | [($f | area)[] | select(. as $x | $u | index($x))] | length) > 0 then .
+            else .b += [$f] | .tags += ($f | area) end)
          | .b[].id end' --argjson max "$1"
     ;;
   stats)
@@ -147,6 +156,11 @@ case "$cmd" in
     upd "$1" 'setst("needs_human"; $t) | .question = $n | logev("ask"; $n; $t)' --arg n "$2"
     echo "needs_human $1"
     ;;
+  requeue)
+    need_id "${1:-}"
+    upd "$1" 'setst("todo"; $t) | .notes = $n | logev("requeue"; $n; $t)' --arg n "${2:-}"
+    echo "requeued $1"
+    ;;
   answer)
     need_id "${1:-}"; [[ -n "${2:-}" ]] || die "usage: answer <ID> <text>"
     upd "$1" '(if st == "needs_human" then setst("todo"; $t) else . end) | .answer = $n | del(.question) | logev("answer"; $n; $t)' --arg n "$2"
@@ -156,7 +170,7 @@ case "$cmd" in
     q '.features[] | live | select(st == "needs_human") | "\(.id)\t\(.question // "")"'
     ;;
   table) # markdown rows for the run summary
-    q '.features[] | "| \(.id) | \(lbl) | \(.description | .[0:70]) | \((.question // .notes // "") | gsub("\\|"; "/") | .[0:80]) |"'
+    q '.features[] | "| \(.id) | \(lbl) | \(.description | .[0:70]) | \(if st == "passing" then "" else (.question // .notes // "") end | gsub("\\|"; "/") | .[0:80]) |"'
     ;;
   claimed)
     q '.features[] | live | select(st == "claimed") | .id'
