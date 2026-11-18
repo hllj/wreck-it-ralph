@@ -1,0 +1,488 @@
+<title>wreck-it-ralph Field Guide</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Schibsted+Grotesk:wght@600;700&display=swap">
+<style>
+/* Layout: one reading column with full-width diagrams; gates are blue, agents neutral, humans amber. */
+:root {
+  --bg: #f4f6f9; --surface: #ffffff; --ink: #16202e; --muted: #586377; --line: #d3d9e2; --code: #e9edf3;
+  --accent: #2b54c9; --accent-soft: #e2e8fa;
+  --human: #9a5a08; --human-soft: #fbeed6;
+  --pass: #1d7448; --pass-soft: #dcf0e4;
+  --fail: #b3322b; --fail-soft: #f8e0de;
+  --display: "Schibsted Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e131b; --surface: #151c27; --ink: #e5e9ef; --muted: #9aa4b4; --line: #2a3443; --code: #1a2230;
+    --accent: #85a2ff; --accent-soft: #1c2a4f; --human: #eaa84a; --human-soft: #3a2a12;
+    --pass: #5fc893; --pass-soft: #11301f; --fail: #f2847b; --fail-soft: #3b1b19; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e131b; --surface: #151c27; --ink: #e5e9ef; --muted: #9aa4b4; --line: #2a3443; --code: #1a2230;
+  --accent: #85a2ff; --accent-soft: #1c2a4f; --human: #eaa84a; --human-soft: #3a2a12;
+  --pass: #5fc893; --pass-soft: #11301f; --fail: #f2847b; --fail-soft: #3b1b19; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font: 16px/1.6 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 64px;
+}
+.wrap { max-width: 920px; margin: 0 auto; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; line-height: 1.15; margin: 0; }
+h1 { font-size: clamp(2.2rem, 6vw, 3.4rem); letter-spacing: -0.02em; }
+h2 { font-size: 1.6rem; letter-spacing: -0.01em; }
+h3 { font-size: 1.1rem; }
+p { margin: 0; max-width: 68ch; }
+a { color: var(--accent); }
+code, pre, kbd { font-family: var(--mono); font-size: 0.88em; }
+:not(pre) > code { background: var(--code); padding: 0.1em 0.35em; border-radius: 4px; }
+
+header { padding-block: 56px 28px; display: grid; gap: 18px; }
+.eyebrow { font: 500 0.78rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.lede { font-size: 1.15rem; color: var(--ink); }
+.roles { display: flex; flex-wrap: wrap; gap: 10px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; font-size: 0.85rem; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); }
+.dot { width: 10px; height: 10px; border-radius: 3px; border: 1.5px solid; }
+.dot.gate { background: var(--accent-soft); border-color: var(--accent); }
+.dot.agent { background: var(--surface); border-color: var(--muted); }
+.dot.human { background: var(--human-soft); border-color: var(--human); }
+
+nav { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line); margin-inline: calc(-1 * max(16px, env(safe-area-inset-left, 0px))); padding: 10px max(16px, env(safe-area-inset-left, 0px)); }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+nav .wrap { display: flex; gap: 6px 18px; flex-wrap: wrap; font-size: 0.9rem; }
+nav a { color: var(--muted); text-decoration: none; }
+nav a:hover, nav a:focus-visible { color: var(--accent); }
+
+section { padding-block: 48px 8px; display: grid; gap: 18px; }
+section > .head { display: grid; gap: 8px; }
+.kicker { font: 500 0.75rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+
+figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px; display: grid; gap: 12px; }
+.scroll { overflow-x: auto; }
+figure svg { display: block; width: 100%; height: auto; min-width: 640px; color: var(--muted); font-family: var(--body); }
+figcaption { font-size: 0.92rem; color: var(--muted); max-width: 72ch; }
+svg .box { fill: var(--surface); stroke: var(--muted); stroke-width: 1.3; }
+svg .gate { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+svg .opt { fill: var(--surface); stroke: var(--muted); stroke-width: 1.3; stroke-dasharray: 5 4; }
+svg .hum { fill: var(--human-soft); stroke: var(--human); stroke-width: 1.5; }
+svg .bad { fill: var(--fail-soft); stroke: var(--fail); stroke-width: 1.5; }
+svg .good { fill: var(--pass-soft); stroke: var(--pass); stroke-width: 1.5; }
+svg .band { fill: var(--code); stroke: var(--line); }
+svg .t { fill: var(--ink); font-size: 14px; font-weight: 600; }
+svg .s { fill: var(--muted); font-size: 11.5px; }
+svg .l { fill: var(--muted); font-size: 11.5px; }
+svg .lb { fill: var(--fail); font-size: 11.5px; }
+svg .lg { fill: var(--pass); font-size: 11.5px; }
+svg .lh { fill: var(--human); font-size: 11.5px; }
+svg .mono { font-family: var(--mono); font-size: 11.5px; fill: var(--ink); }
+svg .ln { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+svg .ln-b { stroke: var(--fail); stroke-width: 1.5; fill: none; }
+svg .ln-g { stroke: var(--pass); stroke-width: 1.5; fill: none; }
+svg .ln-h { stroke: var(--human); stroke-width: 1.5; fill: none; }
+svg .dash { stroke-dasharray: 4 4; }
+svg .m path { fill: var(--muted); }
+svg .mb path { fill: var(--fail); }
+svg .mg path { fill: var(--pass); }
+svg .mh path { fill: var(--human); }
+
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; }
+.note { border-top: 2px solid var(--line); padding-top: 10px; display: grid; gap: 4px; min-width: 0; }
+.note h3 { font-size: 1rem; }
+.note p { font-size: 0.94rem; color: var(--muted); }
+
+table { border-collapse: collapse; width: 100%; font-size: 0.93rem; background: var(--surface); }
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 600 0.78rem/1.3 var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); background: var(--bg); }
+tr:last-child td { border-bottom: 0; }
+td:first-child { white-space: nowrap; }
+.pill { display: inline-block; font: 500 0.75rem/1.5 var(--mono); padding: 0 7px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+.pill.gate { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.pill.agent { color: var(--muted); border-color: var(--muted); }
+.pill.human { color: var(--human); border-color: var(--human); background: var(--human-soft); }
+
+ol.steps { list-style: none; counter-reset: step; padding: 0; margin: 0; display: grid; gap: 18px; }
+ol.steps > li { counter-increment: step; display: grid; grid-template-columns: 2.2rem minmax(0, 1fr); gap: 4px 12px; }
+ol.steps > li::before { content: counter(step); grid-row: span 3; font: 700 1rem/2rem var(--display); width: 2rem; height: 2rem; text-align: center; border-radius: 50%; background: var(--accent-soft); color: var(--accent); }
+ol.steps h3 { line-height: 2rem; }
+ol.steps p { color: var(--muted); font-size: 0.95rem; }
+.cmd { position: relative; background: var(--code); border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.cmd pre { margin: 0; padding: 10px 84px 10px 12px; overflow-x: auto; white-space: pre; line-height: 1.55; }
+.copy { position: absolute; top: 6px; right: 6px; font: 500 0.75rem/1 var(--body); padding: 6px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.copy:hover { border-color: var(--accent); color: var(--accent); }
+.copy:focus-visible, nav a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.aside { border-left: 3px solid var(--human); background: var(--human-soft); padding: 12px 14px; border-radius: 0 8px 8px 0; display: grid; gap: 8px; }
+.aside p { font-size: 0.95rem; }
+
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.fact { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 2px; }
+.fact b { font: 700 1.5rem/1.2 var(--display); font-variant-numeric: tabular-nums; }
+.fact span { font-size: 0.85rem; color: var(--muted); }
+.log { background: var(--code); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; }
+.log pre { margin: 0; padding: 14px; font-size: 0.8rem; line-height: 1.6; }
+.log .ok { color: var(--pass); } .log .no { color: var(--fail); } .log .dim { color: var(--muted); }
+
+dl.files { display: grid; grid-template-columns: minmax(0, 14rem) minmax(0, 1fr); gap: 8px 18px; margin: 0; }
+dl.files dt { font-family: var(--mono); font-size: 0.86rem; overflow-wrap: anywhere; }
+dl.files dd { margin: 0; color: var(--muted); font-size: 0.94rem; }
+@media (max-width: 560px) { dl.files { grid-template-columns: 1fr; } dl.files dd { margin-bottom: 8px; } }
+footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.88rem; }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+html { scroll-behavior: smooth; }
+section[id] { scroll-margin-top: 56px; }
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">Claude Code plugin · v3.4.1</div>
+  <h1>wreck-it-ralph</h1>
+  <p class="lede">It builds software one feature at a time, over as many sessions as it takes. Every agent starts with a fresh context. The plan, the history and the proof live on disk and in git, and small scripts decide what counts as done, not the model.</p>
+  <div class="roles" aria-label="Legend">
+    <span class="chip"><span class="dot gate"></span>Gate: a deterministic script</span>
+    <span class="chip"><span class="dot agent"></span>Agent: a fresh Claude subagent</span>
+    <span class="chip"><span class="dot human"></span>You: approve, answer, trust</span>
+  </div>
+</header>
+</div>
+
+<nav aria-label="Sections"><div class="wrap">
+  <a href="#session">One session</a><a href="#lifecycle">Feature lifecycle</a><a href="#parallel">Parallel coders</a>
+  <a href="#quickstart">Quickstart</a><a href="#unattended">Run without you</a><a href="#trial">A real run</a><a href="#reference">Reference</a>
+</div></nav>
+
+<div class="wrap">
+
+<section id="session">
+  <div class="head">
+    <div class="kicker">The loop</div>
+    <h2>How one session runs</h2>
+    <p>A session builds one feature, or a few in parallel. Agents do the work, and gates check it before it counts. Then the next session starts with brand-new contexts and reads the same files.</p>
+  </div>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 860 336" role="img" aria-label="One session: begin gate picks the next ready feature, a fresh coder builds and claims it, the verify gate runs its tests, a fresh tester checks it end to end, optional extensions review, and the end gate locks the spec, commits and checks for being stuck. A failed test marks the feature failing and it is retried next session with the note. Three failures send it to a human. Then the next session begins with new contexts.">
+      <defs>
+        <marker id="a" class="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="ab" class="mb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="ah" class="mh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+      <rect class="band" x="16" y="10" width="827" height="36" rx="6"/>
+      <text class="mono" x="430" y="33" text-anchor="middle">on disk + git:  feature_list.json · learnings.md · progress.md · commits</text>
+      <line class="ln dash" x1="215" y1="46" x2="215" y2="98" marker-end="url(#a)"/>
+      <line class="ln dash" x1="501" y1="46" x2="501" y2="98" marker-end="url(#a)"/>
+      <text class="l" x="223" y="70">reads first</text>
+      <text class="l" x="509" y="70">reads first</text>
+
+      <rect class="gate" x="16" y="100" width="112" height="60" rx="8"/>
+      <text class="t" x="72" y="126" text-anchor="middle">begin gate</text>
+      <text class="s" x="72" y="145" text-anchor="middle">pick ready feature</text>
+      <rect class="box" x="159" y="100" width="112" height="60" rx="8"/>
+      <text class="t" x="215" y="126" text-anchor="middle">coder</text>
+      <text class="s" x="215" y="145" text-anchor="middle">fresh context</text>
+      <rect class="gate" x="302" y="100" width="112" height="60" rx="8"/>
+      <text class="t" x="358" y="126" text-anchor="middle">verify gate</text>
+      <text class="s" x="358" y="145" text-anchor="middle">runs its tests</text>
+      <rect class="box" x="445" y="100" width="112" height="60" rx="8"/>
+      <text class="t" x="501" y="126" text-anchor="middle">tester</text>
+      <text class="s" x="501" y="145" text-anchor="middle">fresh, skeptical</text>
+      <rect class="opt" x="588" y="100" width="112" height="60" rx="8"/>
+      <text class="t" x="644" y="126" text-anchor="middle">extensions</text>
+      <text class="s" x="644" y="145" text-anchor="middle">review, curator…</text>
+      <rect class="gate" x="731" y="100" width="112" height="60" rx="8"/>
+      <text class="t" x="787" y="126" text-anchor="middle">end gate</text>
+      <text class="s" x="787" y="145" text-anchor="middle">lock · commit</text>
+
+      <line class="ln" x1="128" y1="130" x2="157" y2="130" marker-end="url(#a)"/>
+      <line class="ln" x1="271" y1="130" x2="300" y2="130" marker-end="url(#a)"/>
+      <line class="ln" x1="414" y1="130" x2="443" y2="130" marker-end="url(#a)"/>
+      <line class="ln" x1="557" y1="130" x2="586" y2="130" marker-end="url(#a)"/>
+      <line class="ln" x1="700" y1="130" x2="729" y2="130" marker-end="url(#a)"/>
+      <text class="l" x="143" y="93" text-anchor="middle">target</text>
+      <text class="l" x="286" y="93" text-anchor="middle">claim</text>
+      <text class="l" x="429" y="93" text-anchor="middle">tests pass</text>
+      <text class="l" x="572" y="93" text-anchor="middle">pass / fail</text>
+      <text class="l" x="715" y="93" text-anchor="middle">notes</text>
+
+      <line class="ln-b" x1="358" y1="160" x2="358" y2="198" marker-end="url(#ab)"/>
+      <text class="lb" x="366" y="184">exit ≠ 0</text>
+      <rect class="bad" x="302" y="200" width="112" height="46" rx="8"/>
+      <text class="t" x="358" y="220" text-anchor="middle">failing</text>
+      <text class="s" x="358" y="237" text-anchor="middle">note recorded</text>
+      <line class="ln-b dash" x1="358" y1="246" x2="358" y2="296"/>
+      <text class="lb" x="366" y="276">retried with the note</text>
+
+      <line class="ln-h" x1="752" y1="160" x2="702" y2="214" marker-end="url(#ah)"/>
+      <text class="lh" x="718" y="196" text-anchor="end">3rd failure</text>
+      <rect class="hum" x="588" y="200" width="112" height="46" rx="8"/>
+      <text class="t" x="644" y="220" text-anchor="middle">needs_human</text>
+      <text class="s" x="644" y="237" text-anchor="middle">skipped till you answer</text>
+
+      <path class="ln" d="M815,160 V296 H72 V162" marker-end="url(#a)"/>
+      <text class="l" x="560" y="318" text-anchor="middle">next session: new contexts, same backlog on disk</text>
+    </svg>
+    </div>
+    <figcaption>Blue boxes are scripts and can't be talked out of a decision. The coder can only <em>claim</em> a feature. The verify gate runs that feature's own test commands, and only the tester can mark it passing. If a feature passes without the tester, the end gate resets it.</figcaption>
+  </figure>
+  <div class="notes">
+    <div class="note"><h3>Fresh context, every time</h3><p>No agent remembers the previous one. Each starts by reading <code>learnings.md</code>, the progress log and git history, then runs <code>init.sh</code> and a smoke test before touching anything.</p></div>
+    <div class="note"><h3>Ralph lives inside</h3><p>A failed feature is retried next session in a new context. The new attempt gets the failure note and is told not to repeat what failed: the Ralph loop, but with a real verifier.</p></div>
+    <div class="note"><h3>It stops for a reason</h3><p>The loop stops when everything passes, when the budget or session cap is reached, when it's stuck, or when only work waiting on you is left. Each stop has a code and an entry in <code>last-run.md</code>.</p></div>
+  </div>
+</section>
+
+<section id="lifecycle">
+  <div class="head">
+    <div class="kicker">The backlog</div>
+    <h2>Where a feature can be</h2>
+    <p>Every feature in <code>.harness/feature_list.json</code> has one status. Agents can move it only along these arrows, and only through <code>feature-list.sh</code>. The feature's description, steps and tests are locked.</p>
+  </div>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 760 284" role="img" aria-label="Feature lifecycle: an approved proposal creates a todo feature. The coder claims it. The tester passes it, or the verify gate or tester fails it. A failing feature is retried by the coder, or after the third failure or a question it needs a human, who answers it back to todo. A passing feature can fail again on a regression.">
+      <defs>
+        <marker id="b" class="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="bb" class="mb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="bg" class="mg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="bh" class="mh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+      <line class="ln-h" x1="190" y1="6" x2="190" y2="38" marker-end="url(#bh)"/>
+      <text class="lh" x="198" y="22">your approved proposal</text>
+
+      <rect class="box" x="130" y="40" width="120" height="44" rx="8"/><text class="t" x="190" y="67" text-anchor="middle">todo</text>
+      <rect class="box" x="360" y="40" width="120" height="44" rx="8"/><text class="t" x="420" y="67" text-anchor="middle">claimed</text>
+      <rect class="good" x="590" y="40" width="120" height="44" rx="8"/><text class="t" x="650" y="67" text-anchor="middle">passing</text>
+      <rect class="hum" x="130" y="196" width="120" height="44" rx="8"/><text class="t" x="190" y="223" text-anchor="middle">needs_human</text>
+      <rect class="bad" x="360" y="196" width="120" height="44" rx="8"/><text class="t" x="420" y="223" text-anchor="middle">failing</text>
+
+      <line class="ln" x1="250" y1="62" x2="358" y2="62" marker-end="url(#b)"/>
+      <text class="l" x="304" y="54" text-anchor="middle">coder claims</text>
+      <line class="ln-g" x1="480" y1="62" x2="588" y2="62" marker-end="url(#bg)"/>
+      <text class="lg" x="534" y="54" text-anchor="middle">tester passes</text>
+      <line class="ln-b" x1="405" y1="84" x2="405" y2="194" marker-end="url(#bb)"/>
+      <text class="lb" x="397" y="138" text-anchor="end">verify gate or</text>
+      <text class="lb" x="397" y="153" text-anchor="end">tester fails</text>
+      <line class="ln" x1="435" y1="196" x2="435" y2="86" marker-end="url(#b)"/>
+      <text class="l" x="443" y="145">coder retries</text>
+      <line class="ln-h" x1="360" y1="218" x2="252" y2="218" marker-end="url(#bh)"/>
+      <text class="lh" x="306" y="210" text-anchor="middle">3rd fail or ask</text>
+      <line class="ln-h" x1="190" y1="196" x2="190" y2="86" marker-end="url(#bh)"/>
+      <text class="lh" x="182" y="145" text-anchor="end">you answer</text>
+      <line class="ln-b" x1="640" y1="84" x2="482" y2="206" marker-end="url(#bb)"/>
+      <text class="lb" x="582" y="158">regression found</text>
+
+      <text class="s" x="590" y="226">dropped: only you, via backlog</text>
+    </svg>
+    </div>
+    <figcaption>Amber arrows are your moves. Two more moves aren't drawn. If a parallel worker's merge conflicts, its feature is <em>requeued</em> back to todo without counting a failure. Approving an amendment to a feature's spec sends it back to todo, even if it had passed.</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th>Who</th><th>Can do</th><th>Can never do</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill agent">coder</span></td><td><code>claim</code>, <code>ask</code>, <code>propose</code> a split or follow-up, commit code</td><td>pass a feature, edit the spec</td></tr>
+      <tr><td><span class="pill agent">tester</span></td><td><code>pass</code> or <code>fail</code> the claimed features, <code>ask</code></td><td>pass something nobody claimed, change product code</td></tr>
+      <tr><td><span class="pill agent">planner · extensions</span></td><td><code>propose</code> features; extensions may <code>fail</code> a feature they find broken</td><td>approve, pass</td></tr>
+      <tr><td><span class="pill gate">gates</span></td><td>run verify commands, restore an edited spec, reset unverified passes, escalate, merge parallel work, commit</td><td>be persuaded</td></tr>
+      <tr><td><span class="pill human">you</span></td><td>approve or reject proposals, answer questions, drop or reprioritize, trust the config</td><td></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="parallel">
+  <div class="head">
+    <div class="kicker">Scale</div>
+    <h2>Parallel coders</h2>
+    <p>With <code>"parallel": {"max_workers": 2}</code>, a headless session can build features whose <code>tags</code> don't overlap at the same time. Each gets its own git worktree, and a merge gate brings the work back. This is session 2 of the live trial:</p>
+  </div>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 820 232" role="img" aria-label="Parallel session from the live trial: main forks two worktrees, F002 tagged counting and F004 tagged ranking, each with a fresh coder. The merge gate resets status files on each branch and merges. F002 merged and its claim was applied in main, then verified and tested. F004 conflicted and was requeued to run alone next session, without counting a failure.">
+      <defs>
+        <marker id="c" class="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="cb" class="mb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="cg" class="mg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+      <rect class="gate" x="16" y="88" width="120" height="56" rx="8"/>
+      <text class="t" x="76" y="112" text-anchor="middle">begin + batch</text>
+      <text class="s" x="76" y="130" text-anchor="middle">disjoint tags only</text>
+
+      <rect class="box" x="196" y="30" width="160" height="56" rx="8"/>
+      <text class="t" x="276" y="54" text-anchor="middle">worktree F002</text>
+      <text class="s" x="276" y="72" text-anchor="middle">[counting] · coder claims</text>
+      <rect class="box" x="196" y="146" width="160" height="56" rx="8"/>
+      <text class="t" x="276" y="170" text-anchor="middle">worktree F004</text>
+      <text class="s" x="276" y="188" text-anchor="middle">[ranking] · coder claims</text>
+      <path class="ln" d="M136,108 C166,108 166,58 194,58" marker-end="url(#c)"/>
+      <path class="ln" d="M136,124 C166,124 166,174 194,174" marker-end="url(#c)"/>
+      <text class="l" x="146" y="82">branch</text>
+      <text class="l" x="146" y="160">branch</text>
+
+      <rect class="gate" x="424" y="88" width="136" height="56" rx="8"/>
+      <text class="t" x="492" y="112" text-anchor="middle">merge gate</text>
+      <text class="s" x="492" y="130" text-anchor="middle">status files reset</text>
+      <path class="ln" d="M356,58 C392,58 392,104 422,104" marker-end="url(#c)"/>
+      <path class="ln" d="M356,174 C392,174 392,128 422,128" marker-end="url(#c)"/>
+      <text class="l" x="372" y="50">merge</text>
+      <text class="l" x="372" y="194">merge</text>
+
+      <rect class="good" x="624" y="30" width="180" height="56" rx="8"/>
+      <text class="t" x="714" y="54" text-anchor="middle">F002 claim applied</text>
+      <text class="s" x="714" y="72" text-anchor="middle">→ verify gate → tester</text>
+      <rect class="bad" x="624" y="146" width="180" height="56" rx="8"/>
+      <text class="t" x="714" y="170" text-anchor="middle">F004 requeued</text>
+      <text class="s" x="714" y="188" text-anchor="middle">no failure counted · runs alone</text>
+      <path class="ln-g" d="M560,104 C592,104 592,58 622,58" marker-end="url(#cg)"/>
+      <path class="ln-b" d="M560,128 C592,128 592,174 622,174" marker-end="url(#cb)"/>
+      <text class="lg" x="574" y="50">clean</text>
+      <text class="lb" x="574" y="194">conflict</text>
+    </svg>
+    </div>
+    <figcaption>Workers never merge the feature list. The gate resets those files on each branch and applies each worker's claim, question or proposal itself, so the spec lock holds. Both features edited the same <code>cli.py</code>, so F004 conflicted. Tags should follow the files a feature touches.</figcaption>
+  </figure>
+  <p>Interactive <code>/run</code> stays one step at a time, because subagents can't be pinned to a worktree reliably. A feature without tags never runs in parallel, and a tag every feature shares is ignored.</p>
+</section>
+
+<section id="quickstart">
+  <div class="head">
+    <div class="kicker">Quickstart</div>
+    <h2>From empty folder to first passing feature</h2>
+    <p>You need <code>git</code> with <code>user.name</code> and <code>user.email</code> set, and <code>jq</code>. All commands are typed in Claude Code unless shown as a shell command.</p>
+  </div>
+  <ol class="steps">
+    <li>
+      <h3>Load the plugin</h3>
+      <p>Try it from a local checkout, or install it from your marketplace.</p>
+      <div class="cmd"><pre>claude --plugin-dir /path/to/wreck-it-ralph</pre><button class="copy" type="button">Copy</button></div>
+    </li>
+    <li>
+      <h3>Describe the goal</h3>
+      <p>The initializer turns it into a locked feature list with tests, plus <code>init.sh</code> and a progress log, then commits. For an existing codebase add <code>--brownfield</code>; for a non-web project pick a preset.</p>
+      <div class="cmd"><pre>/wreck-it-ralph:init "Python CLI textstats: words, lines, top N words" --preset cli</pre><button class="copy" type="button">Copy</button></div>
+    </li>
+    <li>
+      <h3>Run the loop and watch</h3>
+      <p>This session orchestrates fresh coder and tester subagents. It prints one line per session, and you can interrupt at any time; all state is on disk.</p>
+      <div class="cmd"><pre>/wreck-it-ralph:run --max-sessions 5</pre><button class="copy" type="button">Copy</button></div>
+    </li>
+    <li>
+      <h3>Add features whenever you like</h3>
+      <p>The planner breaks the request into small, testable features and files a proposal. You see every test command it will run before you approve.</p>
+      <div class="cmd"><pre>/wreck-it-ralph:add "Export the top-N list as CSV"
+/wreck-it-ralph:backlog approve P001</pre><button class="copy" type="button">Copy</button></div>
+    </li>
+    <li>
+      <h3>Answer when it asks</h3>
+      <p>A feature that needs a decision, or has failed three times, waits for you while the loop carries on with the others.</p>
+      <div class="cmd"><pre>/wreck-it-ralph:backlog questions
+/wreck-it-ralph:backlog answer F005 "exit code 2 for usage errors"</pre><button class="copy" type="button">Copy</button></div>
+    </li>
+    <li>
+      <h3>Check how it's going</h3>
+      <p><code>status</code> shows progress, spend, questions and proposals. <code>doctor</code> checks the setup and whether every plugin the pipeline uses is installed.</p>
+      <div class="cmd"><pre>/wreck-it-ralph:status
+/wreck-it-ralph:doctor</pre><button class="copy" type="button">Copy</button></div>
+    </li>
+  </ol>
+  <div class="aside">
+    <p><strong>One small task?</strong> Skip the harness and use the in-session Ralph loop. It repeats the same prompt until the check command passes, so "I'm done" alone isn't enough to stop it.</p>
+    <div class="cmd"><pre>/wreck-it-ralph:ralph "Make the test suite green" --verify 'npm test' --max-iterations 15</pre><button class="copy" type="button">Copy</button></div>
+  </div>
+</section>
+
+<section id="unattended">
+  <div class="head">
+    <div class="kicker">Unattended</div>
+    <h2>Run it without you, in stages</h2>
+    <p>Earn trust in a loop step by step. Start with shadow runs and read the reports. Move up a level once they keep being right.</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Level</th><th>Where the work goes</th><th>Your branch</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill gate">L1 shadow</span></td><td><code>harness/shadow-*</code> branch, then back to yours; only a report is left</td><td>untouched</td></tr>
+      <tr><td><span class="pill gate">L2 assisted</span></td><td><code>harness/run-*</code> branch; optional push and pull request</td><td>untouched</td></tr>
+      <tr><td><span class="pill gate">L3 unattended</span></td><td>commits on the current branch</td><td>commits land here</td></tr>
+    </tbody>
+  </table></div>
+  <p>Set a budget before any unattended run. It applies per run and is checked before every session. <code>0</code> means no limit.</p>
+  <div class="cmd"><pre>"budget": { "max_cost_usd": 10, "max_wall_minutes": 240, "max_diff_lines": 800, "on_large_diff": "stop" },
+"parallel": { "max_workers": 2 },
+"escalate_after_failures": 3</pre><button class="copy" type="button">Copy</button></div>
+  <div class="cmd"><pre>/wreck-it-ralph:run-headless --rollout L1 --max-sessions 3
+/wreck-it-ralph:trigger cron --every 2h          # prints a crontab line; you install it
+/wreck-it-ralph:trigger github --on-failure "CI" --rollout L2
+/wreck-it-ralph:setup --notify                   # desktop notice when it needs you</pre><button class="copy" type="button">Copy</button></div>
+</section>
+
+<section id="trial">
+  <div class="head">
+    <div class="kicker">Live trial · 18 Nov 2026</div>
+    <h2>What a real run looked like</h2>
+    <p>A headless run on the <code>textstats</code> CLI, using <code>sonnet</code>, a $4 cap, 4 sessions and 2 parallel workers. Every agent was a real <code>claude -p</code> call.</p>
+  </div>
+  <div class="facts">
+    <div class="fact"><b>4 / 5</b><span>features passed, all tester-verified</span></div>
+    <div class="fact"><b>$1.76</b><span>total: $0.32 initializer, $1.44 loop</span></div>
+    <div class="fact"><b>~3 min</b><span>for four sessions</span></div>
+    <div class="fact"><b>18</b><span>pytest tests written by the coders</span></div>
+  </div>
+  <div class="log"><pre><span class="dim">[12:05:51]</span> ── session 1 | 0/5 passing | target: F001
+<span class="dim">[12:06:12]</span>    <span class="ok">✓</span> coder finished · verify commands passed for F001
+<span class="dim">[12:06:29]</span> ── session 1 done | 1/5 passing | commits: 2 | spent: $0.27
+<span class="dim">[12:06:30]</span>    ⇉ 2 coders in parallel (git worktrees)
+<span class="dim">[12:07:04]</span>    ⇇ merged: F002 | <span class="no">conflicts (retried later): F004</span>
+<span class="dim">[12:07:26]</span> ── session 2 done | 2/5 passing | commits: 5 | spent: $0.73
+<span class="dim">[12:08:22]</span> ── session 3 done | 3/5 passing | spent: $1.15
+<span class="dim">[12:09:14]</span> ── session 4 done | 4/5 passing | spent: $1.44
+<span class="dim">[12:09:14]</span> 🛑 max sessions reached</pre></div>
+  <p>The tester went well past the listed steps, trying Windows line endings, unicode, binary files, directories, negative N and regressions. The trial also surfaced six problems, all fixed in v3.4.1. The most important: the initializer installed pytest into the system Python, and the prompts now forbid global installs.</p>
+</section>
+
+<section id="reference">
+  <div class="head">
+    <div class="kicker">Reference</div>
+    <h2>What lives in <code>.harness/</code></h2>
+  </div>
+  <dl class="files">
+    <dt>feature_list.json</dt><dd>The backlog and the source of truth. Statuses change only through <code>feature-list.sh</code>; the spec is locked.</dd>
+    <dt>proposals.json</dt><dd>Changes to the backlog that wait for your approval.</dd>
+    <dt>learnings.md</dt><dd>Short lessons written by the curator: commands that work, conventions, what failed. Every agent reads it first.</dd>
+    <dt>progress.md</dt><dd>One entry per agent per session. Older entries move to <code>progress/</code>.</dd>
+    <dt>init.sh · stop.sh</dt><dd>Start the app and smoke-test it at the beginning of every session; stop servers when a run ends.</dd>
+    <dt>config.json</dt><dd>Pipeline, budgets, rollout, parallel workers, hooks. Anything that can run commands needs <code>/wreck-it-ralph:trust</code>.</dd>
+    <dt>ledger.jsonl · events.jsonl</dt><dd>Spend per agent run; every gate step as an event other tools and hooks can read.</dd>
+    <dt>last-run.md · sessions/</dt><dd>The summary of the last run, plus per-agent and per-test logs.</dd>
+  </dl>
+  <div class="tbl"><table>
+    <thead><tr><th>Stop code</th><th>Meaning</th><th>What to do</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>Everything passes, or you cancelled</td><td>Read <code>last-run.md</code></td></tr>
+      <tr><td>2 · 3</td><td>Session cap reached · stuck with no progress</td><td>Check failing features' notes, then run again</td></tr>
+      <tr><td>4 · 5 · 6 · 7</td><td>Uncommitted changes · config not trusted · no git identity · another loop running</td><td>Commit, <code>/trust</code>, set identity, or wait</td></tr>
+      <tr><td>8</td><td>Only work waiting on you is left</td><td><code>/backlog questions</code>, then answer</td></tr>
+      <tr><td>9</td><td>Dependencies can never pass</td><td>Fix <code>depends_on</code> with an amend proposal</td></tr>
+      <tr><td>10 · 11</td><td>Budget used up · a session changed too many lines</td><td>Raise the cap · review the commits</td></tr>
+      <tr><td>12</td><td>Rollout branch problem</td><td>Follow the <code>git checkout</code> in the message</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>wreck-it-ralph combines Anthropic's long-running agent harness, Geoffrey Huntley's Ralph loop and loop-engineering practice. Full details are in the README and <code>docs/ROADMAP-v3.md</code>.</footer>
+</div>
+
+<script>
+document.querySelectorAll('.copy').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    var pre = btn.parentElement.querySelector('pre');
+    var text = pre.innerText.replace(/\s+#.*$/gm, '').trim();
+    function done(label) { btn.textContent = label; setTimeout(function () { btn.textContent = 'Copy'; }, 1500); }
+    function select() { var r = document.createRange(); r.selectNodeContents(pre); var s = getSelection(); s.removeAllRanges(); s.addRange(r); done('Selected'); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done('Copied'); }, select);
+    } else { select(); }
+  });
+});
+</script>
