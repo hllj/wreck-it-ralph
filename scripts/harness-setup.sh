@@ -222,7 +222,7 @@ fi
 if [[ $FOR_INIT -eq 1 || $FORCE -eq 1 ]]; then find "$HARNESS_DIR/sessions" -type f -delete 2>/dev/null || true; fi
 
 refresh_wrappers
-CREATED+=("wrappers: feature-list.sh step.sh run.sh status.sh backlog.sh doctor.sh notify.sh trigger.sh intake.sh")
+CREATED+=("wrappers: feature-list.sh step.sh run.sh status.sh backlog.sh doctor.sh notify.sh trigger.sh intake.sh replay.sh report.sh coverage.sh")
 
 if [[ ! -f "$HARNESS_DIR/README.md" ]]; then
   cat > "$HARNESS_DIR/README.md" <<'EOF'
