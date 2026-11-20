@@ -38,6 +38,34 @@ check "done false until all pass" '! $FL done'
 for i in F001 F002 F003; do $FL pass $i >/dev/null; done
 check "done true when all pass"  '$FL done'
 
+echo "examples + RED"
+new_project 2
+jq '.features[0].verify=["test -f impl.txt"] | .features[0].examples=[{id:"EX001",name:"n",input:{a:1},expect:{status:400},assertions:{status:"exact"}}]' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json
+check "valid examples accepted"      '$FL validate >/dev/null'
+check "examples listed"              '[[ "$($FL examples F001 | cut -f1)" == F001 ]]'
+check "examples-missing lists F002"  '[[ "$($FL examples-missing)" == F002 ]]'
+check "claim refused before RED"     '! $FL claim F001 >/dev/null 2>&1'
+touch impl.txt
+check "red refused when already green" '! $FL red F001 >/dev/null 2>&1'
+rm impl.txt
+check "red recorded when verify fails" '$FL red F001 >/dev/null'
+check "claim allowed after RED"      '$FL claim F001 >/dev/null'
+check "claim needs no RED without examples" '$FL claim F002 >/dev/null'
+$FL fail F001 "x" >/dev/null
+check "RED required again after a failure" '! $FL claim F001 >/dev/null 2>&1'
+check "red --skip satisfies the gate" '$FL red F001 --skip "already exists" >/dev/null && $FL claim F001 >/dev/null'
+check "red --note needs verify-less feature" '! $FL red F002 >/dev/null 2>&1 && $FL red F002 --note "ran it, got 404" >/dev/null'
+$FL lock >/dev/null
+jq '.features[0].examples[0].expect={status:200}' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json
+check "editing an example breaks the lock" '! $FL verify-lock 2>/dev/null'
+check "restore reverts the example"  '$FL restore >/dev/null && [[ "$(jq -r .features[0].examples[0].expect.status .harness/feature_list.json)" == 400 ]]'
+jq '.features[0].examples[0].id="X1"' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json
+check "bad example id rejected"      '! $FL validate >/dev/null 2>&1'
+jq '.features[0].examples[0].id="EX001" | .features[0].examples[0].expect={}' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json
+check "empty expect rejected"        '! $FL validate >/dev/null 2>&1'
+jq '.features[0].examples[0].expect={status:400} | .features[0].examples[0].assertions={status:"fuzzy"}' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json
+check "unknown assertion mode rejected" '! $FL validate >/dev/null 2>&1'
+
 echo "harness-run.sh"
 new_project 3
 check "runner completes coder->tester" '.harness/run.sh >$LOGD/h1.log 2>&1; [[ $? -eq 0 ]] && .harness/feature-list.sh done'

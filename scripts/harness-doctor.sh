@@ -47,6 +47,8 @@ if [[ ! -f "$CFG" ]]; then bad "$CFG missing: run /wreck-it-ralph:setup or /wrec
 if jq -e 'type == "object"' "$CFG" >/dev/null 2>&1; then ok "config.json (version $(jq -r '.version // 2' "$CFG"))"; else bad "config.json is not valid JSON"; fi
 if [[ -f "$HARNESS_DIR/feature_list.json" ]]; then
   if "$FL" validate >/dev/null 2>&1; then ok "feature list: $("$FL" stats)"; else bad "feature list invalid: $("$FL" validate 2>&1 | tail -n1)"; fi
+  miss_ex="$("$FL" examples-missing 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ "${miss_ex:-0}" -gt 0 ]]; then warn "$miss_ex feature(s) have no examples (locked contract cases); see /wreck-it-ralph:backlog"; else ok "every feature has examples"; fi
   if "$FL" verify-lock 2>/dev/null; then ok "spec matches its lock"; else warn "spec differs from its lock (the next session restores it)"; fi
 else
   warn "no feature list yet: run /wreck-it-ralph:init \"<goal>\""

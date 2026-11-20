@@ -26,6 +26,13 @@
 #   failures <ID>           failed attempts since the last human answer
 #   verify-cmds [ID]        verify commands of one feature (or of all features)
 #   done                    exit 0 if every feature that is not dropped passes, else 1
+#   examples [ID]           print "<feature>\t<example json>" for the locked examples (one feature or all)
+#   examples-missing        print ids of live features that have no examples yet
+#   red <ID> [--skip WHY | --note TEXT]
+#                           coder: prove RED before implementing. Runs the feature's verify commands and
+#                           requires at least one to FAIL. --skip WHY (feature already works / refactor) or
+#                           --note TEXT (no verify commands: what you ran and saw) log it without running.
+#                           `claim` refuses a feature that has examples until RED was recorded.
 #   validate [--file PATH]  check the file schema
 #   lock                    snapshot the immutable spec (run after the initializer / an approval)
 #   verify-lock             exit 1 if the spec was edited since `lock`
@@ -55,6 +62,9 @@ def live: select(.dropped != true);
 def setst($s; $t): .status = $s | .passes = ($s == "passing") | del(.claimed) | .updated_at = $t;
 def logev($e; $n; $t): .attempts = (((.attempts // []) + [{at: $t, event: $e, note: $n}]) | .[-20:]);
 def verifies: (.verify // []) | if type == "string" then [.] else . end | map(select(type == "string" and length > 0));
+def has_red: (.attempts // []) as $a
+  | ([$a | to_entries[] | select(.value.event | IN("fail", "requeue", "answer", "claim")) | .key] | max // -1) as $last
+  | any($a | to_entries[]; .key > $last and (.value.event | IN("red", "red-skip")));
 def statuses: (.features | map({key: .id, value: st}) | from_entries);
 def ready($s): live | select(st == "todo" or st == "failing")
   | select(all((.depends_on // [])[]; ($s[.] // "missing") as $d | $d == "passing" or $d == "dropped"));
@@ -79,6 +89,13 @@ spec_json() { jq -S "[.features[] | del($SPEC_STATE_PATHS)]" "$1"; }
 
 validate_file() { # path
   jq -e "$DEFS"'
+    def okex:
+      type == "object"
+      and (.id | type == "string" and test("^EX[0-9]+$"))
+      and (.name | type == "string" and length > 0)
+      and has("input")
+      and (.expect | type == "object" and length > 0)
+      and ((.assertions // {}) | type == "object" and all(.[]; IN("exact", "partial", "contains", "regex")));
     def okfeature($ids):
       (.id | type == "string")
       and (.description | type == "string")
@@ -86,7 +103,8 @@ validate_file() { # path
       and ((.passes | type == "boolean") or (.status | type == "string"))
       and ((.status // "todo") | IN("todo", "claimed", "passing", "failing", "needs_human"))
       and ((.depends_on // []) | type == "array" and all(.[]; . as $d | $ids | index($d) != null))
-      and ((.verify // []) | (type == "string") or (type == "array" and all(.[]; type == "string")));
+      and ((.verify // []) | (type == "string") or (type == "array" and all(.[]; type == "string")))
+      and ((.examples // []) | type == "array" and all(.[]; okex) and ([.[].id] | length == (unique | length)));
     (.features | type == "array" and length > 0)
     and ([.features[].id] | length == (unique | length))
     and ([.features[].id] as $ids | all(.features[]; okfeature($ids)))
@@ -138,6 +156,8 @@ case "$cmd" in
     ;;
   claim)
     need_id "${1:-}"
+    [[ "$(q '.features[] | select(.id == $id) | ((.examples // []) | length > 0) and (has_red | not)' --arg id "$1")" == "true" ]] \
+      && die "$1 has locked examples but no RED was recorded: run '.harness/feature-list.sh red $1' BEFORE implementing (or 'red $1 --skip \"<why>\"')"
     upd "$1" 'setst("claimed"; $t) | logev("claim"; ""; $t)'
     echo "claimed $1"
     ;;
@@ -195,10 +215,45 @@ case "$cmd" in
   done)
     jq -e "$DEFS"' [.features[] | live] | length > 0 and all(.[]; st == "passing")' "$FILE" >/dev/null
     ;;
+  examples)
+    if [[ -n "${1:-}" ]]; then need_id "$1"; q '.features[] | select(.id == $id) | .id as $i | (.examples // [])[] | "\($i)\t\(tojson)"' --arg id "$1"
+    else q '.features[] | live | .id as $i | (.examples // [])[] | "\($i)\t\(tojson)"'; fi
+    ;;
+  examples-missing)
+    q '.features[] | live | select(((.examples // []) | length) == 0) | .id'
+    ;;
+  red)
+    need_id "${1:-}"; id="$1"; shift
+    mode="run"; why=""
+    case "${1:-}" in
+      --skip) mode="skip"; why="${2:-}"; [[ -n "$why" ]] || die "usage: red <ID> --skip <reason>" ;;
+      --note) mode="note"; why="${2:-}"; [[ -n "$why" ]] || die "usage: red <ID> --note <what you ran and saw>" ;;
+      "") ;;
+      *) die "usage: red <ID> [--skip WHY | --note TEXT]" ;;
+    esac
+    if [[ "$mode" == "skip" ]]; then
+      upd "$id" 'logev("red-skip"; $n; $t)' --arg n "$why"; echo "red-skip $id"; exit 0
+    fi
+    cmds="$(q '.features[] | select(.id == $id) | verifies[]' --arg id "$id")"
+    if [[ -z "$cmds" ]]; then
+      [[ "$mode" == "note" ]] || die "$id has no verify commands: run its examples by hand against the app and record 'red $id --note \"<command, observed failure>\"'"
+      upd "$id" 'logev("red"; $n; $t)' --arg n "$why"; echo "red $id (noted)"; exit 0
+    fi
+    failed=0; sum=""
+    while IFS= read -r c; do
+      [[ -z "$c" ]] && continue
+      rc=0; bash -c "$c" >/dev/null 2>&1 < /dev/null || rc=$?
+      [[ $rc -ne 0 ]] && failed=$((failed+1))
+      sum="$sum[$rc] $c; "
+    done <<<"$cmds"
+    [[ $failed -gt 0 ]] || die "$id is not RED: every verify command already passes. Write the failing test/example first (or 'red $id --skip \"<why>\"' if the behaviour already exists)"
+    upd "$id" 'logev("red"; $n; $t)' --arg n "$(cut -c1-300 <<<"$sum")"
+    echo "red $id ($failed failing verify command(s))"
+    ;;
   validate)
     f="$FILE"; [[ "${1:-}" == "--file" ]] && f="${2:?path required}"
     [[ -f "$f" ]] || die "$f not found"
-    validate_file "$f" || die "invalid feature list $f (need unique string ids, description, non-empty steps[], boolean passes or a valid status, depends_on naming existing ids, verify as string or string[])"
+    validate_file "$f" || die "invalid feature list $f (need unique string ids, description, non-empty steps[], boolean passes or a valid status, depends_on naming existing ids, verify as string or string[], examples[] with id EXnnn, name, input, non-empty expect object, assertions in exact|partial|contains|regex)"
     echo "ok: $(jq '.features | length' "$f") features"
     ;;
   lock)
@@ -220,7 +275,7 @@ case "$cmd" in
     echo "restored spec from lock"
     ;;
   *)
-    sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 1
     ;;
 esac
