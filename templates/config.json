@@ -38,5 +38,11 @@
   "progress_max_kb": 64,
   "parallel": {
     "max_workers": 1
+  },
+  "replay": {
+    "adapter": "",
+    "base_url": "",
+    "command": "",
+    "timeout_seconds": 30
   }
 }

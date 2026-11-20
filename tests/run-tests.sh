@@ -66,6 +66,52 @@ check "empty expect rejected"        '! $FL validate >/dev/null 2>&1'
 jq '.features[0].examples[0].expect={status:400} | .features[0].examples[0].assertions={status:"fuzzy"}' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json
 check "unknown assertion mode rejected" '! $FL validate >/dev/null 2>&1'
 
+echo "replay engine"
+new_project 2
+RP=.harness/replay.sh
+set_replay() { jq --argjson r "$1" '.replay = $r' .harness/config.json > .harness/c && mv .harness/c .harness/config.json; }
+set_ex() { jq --argjson e "$1" '.features[0].examples = $e' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json; }
+# cli adapter
+set_replay '{"adapter":"cli","command":"echo","timeout_seconds":10}'
+set_ex '[{"id":"EX001","name":"echo","input":{"args":["hello","world"]},"expect":{"exit_code":0,"stdout":"hello world"}},{"id":"EX002","name":"regex","input":{"args":["v1.2.3"]},"expect":{"stdout":"^v[0-9.]+$"},"assertions":{"stdout":"regex"}}]'
+check "cli examples pass"              '$RP F001 >$LOGD/r1.log 2>&1; [[ $? -eq 0 ]] && grep -q "2/2 examples passed" $LOGD/r1.log'
+check "evidence written"               '[[ "$(jq -r .status .harness/evidence/F001/EX001/result.json)" == pass && -f .harness/evidence/F001/EX001/actual.json ]]'
+set_ex '[{"id":"EX001","name":"wrong","input":{"args":["hello"]},"expect":{"stdout":"bye"}}]'
+check "mismatch fails with diff"       '$RP F001 >$LOGD/r2.log 2>&1; [[ $? -eq 1 ]] && grep -q "expected \"bye\" got \"hello\"" $LOGD/r2.log'
+set_ex '[{"id":"EX001","name":"missing key","input":{"args":["x"]},"expect":{"nope":1}}]'
+check "missing actual key fails"       '! $RP F001 >/dev/null 2>&1'
+set_replay '{"adapter":"cli","command":"/no/such/binary"}'
+set_ex '[{"id":"EX001","name":"n","input":{"args":[]},"expect":{"exit_code":0}}]'
+check "unrunnable command is BLOCKED (3)" '$RP F001 >/dev/null 2>&1; [[ $? -eq 3 ]]'
+set_replay '{"adapter":"cli","command":""}'
+check "unconfigured replay exits 4"    '$RP F001 >/dev/null 2>&1; [[ $? -eq 4 ]]'
+set_replay '{"adapter":"cli","command":"echo"}'
+set_ex '[{"id":"EX001","name":"inj","input":{"args":["a; touch pwned.txt","$(touch pwned2.txt)"]},"expect":{"exit_code":0}}]'
+check "args are never shell-parsed"    '$RP F001 >/dev/null 2>&1; [[ ! -e pwned.txt && ! -e pwned2.txt ]]'
+check "--list prints examples"         '[[ "$($RP F001 --list)" == "EX001	inj" ]]'
+# http adapter against a real server
+mkdir -p $LOGD/www && echo -n "hi there" > $LOGD/www/hello.txt && echo '{"a":1,"b":[1,2]}' > $LOGD/www/data.json
+PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
+(cd $LOGD/www && exec python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1) & SRV=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do curl -s -o /dev/null http://127.0.0.1:$PORT/ && break; sleep 0.3; done
+set_replay '{"adapter":"http","base_url":"http://127.0.0.1:'$PORT'"}'
+set_ex '[{"id":"EX001","name":"text","input":{"path":"/hello.txt"},"expect":{"status":200,"body":"hi there"}},{"id":"EX002","name":"json partial","input":{"path":"/data.json"},"expect":{"status":200,"body":{"a":1}}},{"id":"EX003","name":"404","input":{"path":"/nope"},"expect":{"status":404}},{"id":"EX004","name":"header","input":{"path":"/data.json"},"expect":{"headers":{"content-type":"json"}},"assertions":{"headers":"partial"}}]'
+check "http examples pass (exact, partial, status)" '$RP F001 >$LOGD/r3.log 2>&1; grep -q "3/4 examples passed" $LOGD/r3.log'
+check "partial header with wrong substring fails"   'grep -q "FAIL  F001/EX004" $LOGD/r3.log'
+set_ex '[{"id":"EX001","name":"json exact vs subset","input":{"path":"/data.json"},"expect":{"body":{"a":1}},"assertions":{"body":"exact"}}]'
+check "exact is stricter than partial" '! $RP F001 >/dev/null 2>&1'
+set_ex '[{"id":"EX001","name":"q","input":{"path":"/hello.txt","query":{"x":"a b"}},"expect":{"status":200}}]'
+check "query params are encoded"       '$RP F001 --quiet >/dev/null 2>&1'
+# red proves RED against the running app
+set_ex '[{"id":"EX001","name":"not built yet","input":{"path":"/feature"},"expect":{"status":200}}]'
+check "red passes when an example fails" '$FL red F001 >/dev/null 2>&1'
+set_ex '[{"id":"EX001","name":"already works","input":{"path":"/hello.txt"},"expect":{"status":200}}]'
+check "red refused when examples already pass" '! $FL red F001 >/dev/null 2>&1'
+kill $SRV 2>/dev/null; wait $SRV 2>/dev/null
+set_ex '[{"id":"EX001","name":"n","input":{"path":"/hello.txt"},"expect":{"status":200}}]'
+check "server down: BLOCKED, and red cannot be proven" '$RP F001 >/dev/null 2>&1; [[ $? -eq 3 ]] && ! $FL red F001 >/dev/null 2>&1'
+check "evidence and replay wrapper are git-ignored" 'grep -qxF "evidence/" .harness/.gitignore && grep -qxF "replay.sh" .harness/.gitignore'
+
 echo "harness-run.sh"
 new_project 3
 check "runner completes coder->tester" '.harness/run.sh >$LOGD/h1.log 2>&1; [[ $? -eq 0 ]] && .harness/feature-list.sh done'

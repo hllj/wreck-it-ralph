@@ -235,9 +235,11 @@ case "$cmd" in
       upd "$id" 'logev("red-skip"; $n; $t)' --arg n "$why"; echo "red-skip $id"; exit 0
     fi
     cmds="$(q '.features[] | select(.id == $id) | verifies[]' --arg id "$id")"
-    if [[ -z "$cmds" ]]; then
-      [[ "$mode" == "note" ]] || die "$id has no verify commands: run its examples by hand against the app and record 'red $id --note \"<command, observed failure>\"'"
-      upd "$id" 'logev("red"; $n; $t)' --arg n "$why"; echo "red $id (noted)"; exit 0
+    has_ex="$(q '.features[] | select(.id == $id) | ((.examples // []) | length) > 0' --arg id "$id")"
+    # examples are replayed against the running app by the engine (rc: 0 pass, 1 fail, 3 blocked, 4 not configured)
+    rrc=4; rout=""
+    if [[ "$has_ex" == "true" && -x "$(dirname "$0")/harness-replay.sh" ]]; then
+      rrc=0; rout="$("$(dirname "$0")/harness-replay.sh" "$id" 2>&1)" || rrc=$?
     fi
     failed=0; sum=""
     while IFS= read -r c; do
@@ -246,9 +248,19 @@ case "$cmd" in
       [[ $rc -ne 0 ]] && failed=$((failed+1))
       sum="$sum[$rc] $c; "
     done <<<"$cmds"
-    [[ $failed -gt 0 ]] || die "$id is not RED: every verify command already passes. Write the failing test/example first (or 'red $id --skip \"<why>\"' if the behaviour already exists)"
+    [[ $rrc -eq 1 ]] && { failed=$((failed+1)); sum="${sum}replay: failing examples; "; }
+    if [[ $failed -eq 0 ]]; then
+      if [[ "$mode" == "note" && -z "$cmds" && ( $rrc -eq 4 || $rrc -eq 3 ) ]]; then
+        upd "$id" 'logev("red"; $n; $t)' --arg n "$why"; echo "red $id (noted)"; exit 0
+      fi
+      [[ $rrc -eq 3 ]] && die "$id: cannot prove RED, the app is not reachable ($(tail -n 3 <<<"$rout" | tr '\n' ' ')). Start it (.harness/init.sh) and retry"
+      if [[ -z "$cmds" && $rrc -eq 4 ]]; then
+        die "$id has no verify commands and replay is not configured: run its examples by hand against the app and record 'red $id --note \"<command, observed failure>\"'"
+      fi
+      die "$id is not RED: every verify command and example already passes. Write the failing test/example first (or 'red $id --skip \"<why>\"' if the behaviour already exists)"
+    fi
     upd "$id" 'logev("red"; $n; $t)' --arg n "$(cut -c1-300 <<<"$sum")"
-    echo "red $id ($failed failing verify command(s))"
+    echo "red $id ($failed failing check(s))"
     ;;
   validate)
     f="$FILE"; [[ "${1:-}" == "--file" ]] && f="${2:?path required}"

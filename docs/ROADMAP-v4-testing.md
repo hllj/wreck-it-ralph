@@ -1,6 +1,6 @@
 # Roadmap v4: Evidence-Based Testing
 
-Trạng thái: **M1-M2 đã implement** (examples inline + khóa spec, `feature-list.sh red`, claim gate). M3+ chưa làm. Thay thế phần "tester thử 3-5 input" trong `agents/tester.md`.
+Trạng thái: **M1-M3 đã implement** (examples inline + khóa spec, `red`, claim gate; `replay.sh` + adapter http/cli, evidence ở `.harness/evidence/`). M4+ chưa làm; setup/cleanup fixture và `--step`/`--keep` để M5. Thay thế phần "tester thử 3-5 input" trong `agents/tester.md`.
 
 ## Nguyên tắc
 
