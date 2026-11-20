@@ -1,5 +1,7 @@
 # wreck-it-ralph v3: analysis and improvement plan
 
+> **Numbering note.** The "v3.x" release numbers below are the plugin's earlier internal numbering. The plugin was reset to **0.0.1** (see `CHANGELOG.md`); the content is unchanged and kept as history. The testing roadmap is in `docs/ROADMAP-v4-testing.md`.
+
 Status: **Phases 0 and 1 are implemented in v3.0.0, Phase 2 in v3.1.0 Phase 3 in v3.2.0, Phase 4 in v3.3.0 and Phase 5 in v3.4.0** (2026-11-17). The whole roadmap is implemented. The plan started from `wreck-it-ralph-loop` v2.1.0.
 
 Implementation notes (where v3.0.0 differs from the plan below):

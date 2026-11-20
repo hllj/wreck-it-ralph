@@ -511,7 +511,8 @@ check "allow_dirty config lets it start"             '$S unlock >/dev/null; out_
 SRC="$(mktemp -d)"; cp -R "$ROOT/scripts" "$ROOT/templates" "$ROOT/agents" "$SRC/"
 P="$(mktemp -d)"; cd "$P"; git init -q; "$SRC/scripts/harness-setup.sh" --preset cli >/dev/null 2>&1
 rm -rf "$SRC"
-check "stale wrapper fails with a helpful message" '! .harness/step.sh trust status >$LOGD/w1.log 2>&1; grep -q "setup --refresh" $LOGD/w1.log; [[ "$(.harness/step.sh trust status >/dev/null 2>&1; echo $?)" == 127 ]]'
+NOHOME="$(mktemp -d)"   # an installed plugin copy under the real $HOME would rescue the wrapper and hide the failure
+check "stale wrapper fails with a helpful message" '! HOME="$NOHOME" CLAUDE_PLUGIN_ROOT= .harness/step.sh trust status >$LOGD/w1.log 2>&1; grep -q "setup --refresh" $LOGD/w1.log; [[ "$(HOME="$NOHOME" CLAUDE_PLUGIN_ROOT= .harness/step.sh trust status >/dev/null 2>&1; echo $?)" == 127 ]]'
 check "CLAUDE_PLUGIN_ROOT rescues a stale wrapper" 'CLAUDE_PLUGIN_ROOT="$ROOT" .harness/step.sh trust status >/dev/null 2>&1'
 FH="$(mktemp -d)"; mkdir -p "$FH/.claude/plugins/cache/mkt/wreck-it-ralph/2.0.0"; cp -R "$ROOT/scripts" "$FH/.claude/plugins/cache/mkt/wreck-it-ralph/2.0.0/"
 check "installed-plugin cache fallback works"      'HOME="$FH" .harness/step.sh trust status >/dev/null 2>&1'

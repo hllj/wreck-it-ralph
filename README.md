@@ -1,5 +1,7 @@
 # wreck-it-ralph
 
+> **Status: 0.0.1, a pre-release.** The harness has been exercised by its own test suite (`bash tests/run-tests.sh`) and by one small end-to-end run (a Python API, two sessions, three features). Expect rough edges, and read [Known limits](#known-limits) before relying on it. Earlier internal numbering (3.x) was reset to 0.0.1; see `CHANGELOG.md`.
+
 A Claude Code plugin for building software **gradually, over many sessions**, by combining three ideas:
 
 - **Long-running harness** (Anthropic, [Effective harnesses for long-running agents](https://www.anthropic.com/research/effective-harnesses-for-long-running-agents)):
@@ -114,6 +116,8 @@ After an update, run `/wreck-it-ralph:setup --refresh` in each project. `/wreck-
 | `status` / `cancel` / `help` | Progress, questions and proposals / stop after the current session / explanation. `.harness/status.sh --json` is the machine-readable form. |
 | `trigger cron\|launchd\|github\|loop [--every 2h] [--rollout L1]` | Start runs without you: print a cron line, write a launchd agent or a GitHub Actions workflow (on a schedule, or when CI fails), or a `/loop`. Defaults to rollout L1 with 3 sessions per run. |
 | `intake [github] [--label ralph]` | Turn new labelled GitHub issues (or another tracker's items, through its MCP tools) into planner proposals for your approval. |
+| `demo <ID> [--run\|--example EX\|--step N\|--from A --to B\|--keep]` | Replay a feature's locked examples against the running app (list, all, one, or step by step) and show expected vs actual. |
+| `example <ID> "<case>"` | Propose a new example for a feature's contract. It joins the locked spec only after you approve it. |
 | `doctor` | Health check: tools, git, config, feature list, trust, wrappers, and whether every pipeline extension (other plugins' agents, skills) and hook resolves. |
 | `ralph "<prompt>" [--max-iterations N] [--completion-promise T]` / `cancel-ralph` | The original in-session Ralph loop. |
 
@@ -135,7 +139,7 @@ begin gate ─▶ coder (fresh) ─▶ verify gate ─▶ tester (fresh) ─▶ 
 | **coder** (`agents/coder.md`) | One feature per session. Follows the startup routine (progress, git log, `init.sh` + smoke test, fix breakage first), implements, runs the verify commands, **claims**, commits, logs. It can `ask` a human or propose a split instead of guessing. |
 | **verify gate** (`step.sh verify`) | Runs `verify_static` (from config) and the feature's `verify` commands **in the gate, not in an agent**. If any of them fails, the feature fails and the tester is skipped. Logs go to `.harness/sessions/NNN-verify-<ID>.log`. |
 | **curator** (`agents/curator.md`) | Every 10 sessions (default pipeline), distils `progress.md` and the failure history into `.harness/learnings.md`: commands that work, conventions, approaches that failed, and decisions. Every agent reads it first. |
-| **tester** (`agents/tester.md`) | An independent, skeptical verifier. Exercises the `steps` end to end (Playwright MCP for web), probes beyond them, checks the coder's known issues. It is the only role that marks a feature `passing`. |
+| **tester** (`agents/tester.md`) | An independent, skeptical verifier. Replays the locked examples on the running app, reads the coverage gaps and probes them, checks the coder's known issues, and records one of four verdicts (`pass`, `fail`, `blocked`, `inconclusive`) with evidence. It is the only role that marks a feature `passing`. |
 | **custom agents** | Any `.harness/agents/<name>.md`; templates are in `templates/agents/` (`reviewer`, `cleaner`). Add them to the pipeline with `every` / `when`. |
 | **extensions** | Pipeline steps that `use:` another plugin's agent, a skill, a slash command or a gate-run shell command. See "Working with other plugins". |
 | **gates** (`scripts/harness-step.sh`) | The deterministic rules both loop modes share: trust, lock, dirty-tree and identity checks, session cap, stuck detection, the ready queue, the verify gate, unverified-pass reset, the spec lock, escalation and the summary. |
@@ -198,6 +202,74 @@ Every agent run is recorded in `.harness/ledger.jsonl`, which is git-ignored.
 - `0` means unlimited.
 - The gates check the caps before every session and after it ends.
 - `/status`, the per-session log lines and `.harness/last-run.md` show what was spent. `.harness/step.sh ledger total` prints the totals.
+
+## Testing: examples, replay, coverage
+
+The testing side of the harness is built on three rules: **no evidence, no PASS**; **coverage is visibility, not correctness**; and **agents point at gaps, humans decide**.
+
+### Contract, example, replay
+
+| Term | Meaning | Where it lives |
+|---|---|---|
+| Contract | The behaviour that must hold | the feature's `description` in `feature_list.json` (locked) |
+| Example | One concrete case of the contract, as data | `examples[]` of the feature (locked with the spec) |
+| Replay | How an example is run against the real app | an adapter: `http` or `cli` |
+
+```json
+"examples": [{
+  "id": "EX001", "name": "empty cart", "description": "Reject checkout when the cart is empty",
+  "input": {"method": "POST", "path": "/checkout", "body": {"items": []}},
+  "expect": {"status": 400, "body": {"error": "cart cannot be empty"}},
+  "assertions": {"status": "exact", "body": "partial"}
+}]
+```
+
+- **Assertion modes:** `exact`, `partial` (the expected value is a subset of the actual one), `contains`, `regex`. The default is `exact`, or `partial` when the expected value is an object. `expect` must be machine-checkable; prose like "works correctly" is not an oracle.
+- **Adapters:** `http` takes `{method, path, headers, query, body}` and compares `status`, `headers` (lowercase names) and `body`. `cli` takes `{args, stdin, env}` and compares `exit_code`, `stdout`, `stderr`. The command comes from the trusted `replay.command`, arguments are passed as an array, and an example never contains a shell command.
+- **Flows and fixtures:** an example may have `steps` (run in order, stopping at the first failure), `setup` and `cleanup` (fixture steps with the same adapter). Names can use `{{namespace}}`, a unique id per run, so cleanup removes only what the run created. `--keep` leaves the data for you to inspect.
+- **Locked:** examples are part of the spec. A coder or tester cannot edit them. New ones arrive through proposals (`/wreck-it-ralph:example`, or `add_examples` in a proposal) that you approve; approving one sends the feature back to `todo` because its contract changed.
+
+### RED, then GREEN
+
+For a feature with examples the coder works test-first. `.harness/feature-list.sh red <ID>` runs the feature's `verify` commands **and replays its examples** against the running app, and only records RED if something fails. `claim` is refused until RED is recorded. When the behaviour already exists the coder uses `red <ID> --skip "<why>"`, which the tester can see.
+
+### The tester's evidence
+
+`.harness/replay.sh <ID>` replays examples (exit 0 pass, 1 fail, 3 blocked: the app is unreachable, 4 not configured). Results go to `.harness/evidence/<ID>/<EX>/result.json` with the commit, the example's hash and the actual output. Evidence is git-ignored.
+
+The tester gives its verdict with `.harness/report.sh <ID> <verdict> "<note>"`:
+
+| Verdict | Meaning |
+|---|---|
+| `pass` | Verified and correct. Refused unless every example has a passing replay from this run. |
+| `fail` | Verified and broken. Counts as a failed attempt. |
+| `blocked` | Could not be tested (app or environment). The feature stays claimed and no attempt is counted. If every claimed feature is blocked, the loop stops with code 9. |
+| `inconclusive` | Not enough evidence; becomes a question for you (`needs_human`). |
+
+At the end of a session the gate resets any feature with examples that passed without complete replay evidence. `report.json` and `report.md` in the evidence folder show the examples, the coverage and how you can replay it yourself.
+
+### Coverage
+
+`.harness/coverage.sh run --id <ID>` runs the test suite under coverage and writes normalized reports to `.harness/coverage/`.
+
+| Stack | How |
+|---|---|
+| Python | `coverage.py` with `--branch`, from the project's `.venv` (never installed for you) |
+| Node | Istanbul JSON from vitest, jest, c8 or nyc, using the binaries in `node_modules/.bin` |
+| Go | `go test -coverprofile`; statements only, **no branch data** (`branches` is `null`, never 0%) |
+| Other | `coverage.cmd` writes `coverage.py`, Istanbul or Go-profile data to `$COVERAGE_JSON`, with `coverage.format` naming the format |
+
+- **Scopes are never mixed.** `repository.json` is the whole repo; `<ID>.json` covers the files changed since the session started and says so: it is changed-file coverage, not feature coverage.
+- **Gaps.** `coverage.sh gaps <ID>` lists the branches and lines of the diff that never ran. The tester classifies each one (`needs_example`, `redundant_code`, `defensive_branch`, `inconclusive`, or `verified_by_probe` with evidence of the behaviour it checked, not only that the branch was reached) with a confidence. Nothing is deleted because of a gap, and no test is written just to lift a number.
+- **Baseline and ratchet.** A human records `coverage.sh baseline` (committed; tied to a commit, the tool version and a config fingerprint). `coverage.sh ratchet` then fails if coverage dropped, in two tiers: the whole repository, and every changed file that has a baseline entry. New files are only reported, renames follow `git diff -M`, and exact `covered/total` ratios are compared. If the baseline is missing, the config or tool changed, or the suite is red, the result is "not comparable" (exit 4) and never blocks. `baseline --update` only raises; lowering needs `--accept-decrease "<reason>"`; both are refused inside a loop session.
+- **Mode.** `coverage.mode` is `report` by default (advisory). With `"gate"`, a session whose passed features lowered coverage fails them.
+
+### Known limits
+
+- **Pre-release.** One end-to-end run with real agents on a small Python API; nothing else. The `jest`, `vitest` and `nyc` commands, and the whole Go path (tested against a hand-written profile only), have not run against real projects.
+- **Replay** supports `http` and `cli` only; there is no Playwright adapter, so a `web` project is checked at the endpoint level. The `http` adapter always sends JSON, so it cannot send a malformed body (`raw_body` is not implemented).
+- **Coverage is per session.** When several features are verified in one batch, or coders run in parallel, the gate cannot attribute a regression to one feature and fails all of them.
+- **Mutation testing** and an automatic check for tests without assertions are not implemented. See `docs/ROADMAP-v4-testing.md`.
 
 ## Scale and reach
 
@@ -395,7 +467,10 @@ The bundled `loop-design` skill teaches Claude how to set up and tune a loop: ve
     { "agent": "reviewer", "blocking": false, "every": 5 }
   ],
   "allow_dirty": false,
-  "lock_timeout_minutes": 120
+  "lock_timeout_minutes": 120,
+  "replay": { "adapter": "", "base_url": "http://127.0.0.1:3000", "command": "", "timeout_seconds": 30 },
+  "coverage": { "tool": "", "cmd": "", "format": "coveragepy", "runner": "", "branch": true, "omit": [], "max_gaps": 50, "mode": "report",
+                "ratchet": { "enabled": true, "scope": ["repository", "changed_files"], "allow_new_files": true, "tolerance": 0 } }
 }
 ```
 
@@ -403,6 +478,8 @@ The bundled `loop-design` skill teaches Claude how to set up and tune a loop: ve
 - **`every`:** run the agent every N sessions.
 - **`when`:** `always`, `claimed` or `failing`. The verify gate runs before the first `claimed` step.
 - **No tester:** if the pipeline has no `tester`, claims that pass the verify gate are accepted as passes.
+- **`replay`:** `adapter` is `http` or `cli` (default from the preset: `api` and `web` use `http`, `cli` uses `cli`); `base_url` (or the `BASE_URL` environment variable) is the running app; `command` is the executable for the `cli` adapter.
+- **`coverage`:** `tool` is auto-detected (`go.mod` → go, `package.json` → node, Python markers → python); `cmd` and `format` replace the built-in runner; `runner` picks vitest, jest, c8 or nyc; `omit` takes globs; `mode` is `report` or `gate`.
 
 ## Safety model
 
@@ -410,7 +487,7 @@ The bundled `loop-design` skill teaches Claude how to set up and tune a loop: ve
   - Harness commits use `git add -A`, so `init` refuses to start in a git project with uncommitted changes. Use `--branch NAME` to work on a separate branch, or `--allow-dirty` to include them.
   - Starting a loop on a dirty tree is refused unless `allow_dirty` is set. Changes under `.harness/` don't count.
 - **Trust.**
-  - Some settings come from the repository and can run commands: `permission_mode`, `allowed_tools`, `final_verify_command`, `verify_static`, `claude_bin`, `model`, the MCP config, custom agents in `.harness/agents/`, and the features' `verify` commands.
+  - Some settings come from the repository and can run commands: `permission_mode`, `allowed_tools`, `final_verify_command`, `verify_static`, `replay.command`, `coverage.cmd`, `claude_bin`, `model`, the MCP config, custom agents in `.harness/agents/`, and the features' `verify` commands.
   - A loop refuses to start until you have reviewed them with `/wreck-it-ralph:trust`. The record is kept in the git-ignored `.harness/.trusted`.
   - Configs that setup generates are trusted automatically. So are verify commands written by the initializer in your session, or approved by you in a proposal.
 - **Headless permissions.** The default is `acceptEdits` with an explicit tool list. The runner warns about `bypassPermissions`. Use a sandbox or a throwaway checkout for unattended runs.
@@ -463,4 +540,4 @@ Windows: the hook is a bash script and needs Git for Windows. If `bash` resolves
 
 ## License and credits
 
-Apache-2.0 (see `LICENSE` and `NOTICE`). Derived from Anthropic's Ralph Loop plugin. The Ralph Wiggum technique is credited to Geoffrey Huntley, and the harness design to Anthropic's long-running agents article. The roadmap is in `docs/ROADMAP-v3.md`.
+Apache-2.0 (see `LICENSE` and `NOTICE`). Derived from Anthropic's Ralph Loop plugin. The Ralph Wiggum technique is credited to Geoffrey Huntley, and the harness design to Anthropic's long-running agents article. The roadmaps are in `docs/ROADMAP-v3.md` (harness) and `docs/ROADMAP-v4-testing.md` (testing).

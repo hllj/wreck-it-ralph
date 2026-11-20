@@ -139,7 +139,7 @@ section[id] { scroll-margin-top: 56px; }
 
 <div class="wrap">
 <header>
-  <div class="eyebrow">Claude Code plugin · v3.4.1</div>
+  <div class="eyebrow">Claude Code plugin · 0.0.1 pre-release</div>
   <h1>wreck-it-ralph</h1>
   <p class="lede">It builds software one feature at a time, over as many sessions as it takes. Every agent starts with a fresh context. The plan, the history and the proof live on disk and in git, and small scripts decide what counts as done, not the model.</p>
   <div class="roles" aria-label="Legend">
@@ -151,7 +151,7 @@ section[id] { scroll-margin-top: 56px; }
 </div>
 
 <nav aria-label="Sections"><div class="wrap">
-  <a href="#session">One session</a><a href="#lifecycle">Feature lifecycle</a><a href="#parallel">Parallel coders</a>
+  <a href="#session">One session</a><a href="#lifecycle">Feature lifecycle</a><a href="#parallel">Parallel coders</a><a href="#testing">Testing</a>
   <a href="#quickstart">Quickstart</a><a href="#unattended">Run without you</a><a href="#trial">A real run</a><a href="#reference">Reference</a>
 </div></nav>
 
@@ -346,6 +346,32 @@ section[id] { scroll-margin-top: 56px; }
   <p>Interactive <code>/run</code> stays one step at a time, because subagents can't be pinned to a worktree reliably. A feature without tags never runs in parallel, and a tag every feature shares is ignored.</p>
 </section>
 
+<section id="testing">
+  <div class="head">
+    <div class="kicker">Testing</div>
+    <h2>Proof you can replay, and gaps you can see</h2>
+    <p>The tester does not just say it works. The contract is a set of locked examples, the tester replays them on the running app and leaves evidence, and coverage shows what no run touched. Three rules: no evidence, no PASS; coverage is visibility, not correctness; agents point at gaps, you decide.</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Piece</th><th>What it is</th><th>Who can change it</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill gate">Example</span></td><td>Data: <code>input</code>, <code>expect</code>, and how to compare (<code>exact</code>, <code>partial</code>, <code>contains</code>, <code>regex</code>). Never a shell command.</td><td>Only you, through an approved proposal</td></tr>
+      <tr><td><span class="pill gate">RED</span></td><td><code>feature-list.sh red</code> runs the verify commands and replays the examples; it records RED only if something fails. <code>claim</code> is refused until then.</td><td>The coder, before implementing</td></tr>
+      <tr><td><span class="pill gate">Replay</span></td><td><code>replay.sh</code> runs examples through an <code>http</code> or <code>cli</code> adapter and writes evidence to <code>.harness/evidence/</code>.</td><td>A gate script compares; nobody edits results</td></tr>
+      <tr><td><span class="pill agent">Verdict</span></td><td><code>report.sh</code>: <code>pass</code>, <code>fail</code>, <code>blocked</code> (environment, not counted as a failure), <code>inconclusive</code> (asks you).</td><td>The tester; <code>pass</code> needs complete replay evidence</td></tr>
+      <tr><td><span class="pill agent">Gaps</span></td><td><code>coverage.sh gaps</code> lists branches and lines of the diff that never ran; the tester probes each and classifies it, with confidence and evidence.</td><td>The tester classifies; you decide what becomes an example</td></tr>
+      <tr><td><span class="pill human">Baseline</span></td><td>A committed snapshot of coverage. The ratchet fails if it drops, for the whole repo and for each changed file.</td><td>Only you, between sessions</td></tr>
+    </tbody>
+  </table></div>
+  <div class="cmd"><pre>/wreck-it-ralph:demo F002 --run                  # replay every example on the running app
+/wreck-it-ralph:demo F002 --example EX002        # one example; --step N or --from A --to B for a slice
+/wreck-it-ralph:example F002 "price below zero is rejected"   # proposes a new locked example for you to approve
+.harness/coverage.sh run --id F002 &amp;&amp; .harness/coverage.sh gaps F002
+.harness/coverage.sh baseline                     # you record it; then: .harness/coverage.sh ratchet</pre><button class="copy" type="button">Copy</button></div>
+  <p>Coverage reads Python (coverage.py), Node (vitest, jest, c8, nyc) and Go. Go has no branch data, so branches show as n/a, never 0%. The changed-file report is labelled as such: it is not coverage of the feature. Set <code>"coverage": {"mode": "gate"}</code> to make a drop fail the features passed in that session.</p>
+  <p>This is a pre-release. It has run once end to end on a small Python API, where the tester caught a crash the examples did not cover. Replay has no Playwright adapter yet, and mutation testing is not built. See the README, "Known limits".</p>
+</section>
+
 <section id="quickstart">
   <div class="head">
     <div class="kicker">Quickstart</div>
@@ -454,6 +480,7 @@ section[id] { scroll-margin-top: 56px; }
     <dt>init.sh · stop.sh</dt><dd>Start the app and smoke-test it at the beginning of every session; stop servers when a run ends.</dd>
     <dt>config.json</dt><dd>Pipeline, budgets, rollout, parallel workers, hooks. Anything that can run commands needs <code>/wreck-it-ralph:trust</code>.</dd>
     <dt>ledger.jsonl · events.jsonl</dt><dd>Spend per agent run; every gate step as an event other tools and hooks can read.</dd>
+    <dt>evidence/ · coverage/</dt><dd>Replay results and verdict reports per feature; normalized coverage, gap reports and the ratchet. Git-ignored, except <code>coverage/baseline.json</code>, which you commit.</dd>
     <dt>last-run.md · sessions/</dt><dd>The summary of the last run, plus per-agent and per-test logs.</dd>
   </dl>
   <div class="tbl"><table>
@@ -470,7 +497,7 @@ section[id] { scroll-margin-top: 56px; }
   </table></div>
 </section>
 
-<footer>wreck-it-ralph combines Anthropic's long-running agent harness, Geoffrey Huntley's Ralph loop and loop-engineering practice. Full details are in the README and <code>docs/ROADMAP-v3.md</code>.</footer>
+<footer>wreck-it-ralph combines Anthropic's long-running agent harness, Geoffrey Huntley's Ralph loop and loop-engineering practice. Full details are in the README, <code>docs/ROADMAP-v3.md</code> and <code>docs/ROADMAP-v4-testing.md</code>.</footer>
 </div>
 
 <script>

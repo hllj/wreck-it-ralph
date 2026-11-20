@@ -1,5 +1,7 @@
 # Plugin review: wreck-it-ralph-loop v2.0.0 (high and medium findings fixed; low findings open)
 
+> **Numbering note.** "v3.x" in this review is the earlier internal numbering; the plugin was reset to 0.0.1 (see `CHANGELOG.md`).
+
 Scope: every file in the repo, the full test suite (68 checks passing), `claude plugin validate` (passes with one README warning), and targeted probes for the suspected problems. Items marked **confirmed** were reproduced; the rest are from reading the code. The four high findings are fixed in v2.1.0 and the seven medium findings in the follow-up (all marked **FIXED** below). The ten low findings are still open.
 
 ## Summary

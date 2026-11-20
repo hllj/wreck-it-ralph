@@ -1,6 +1,6 @@
 # Roadmap v4: Evidence-Based Testing
 
-Trạng thái: **M1-M10 đã implement (trừ M11)** (examples inline + khóa spec, `red`, claim gate; `replay.sh` + adapter http/cli, evidence ở `.harness/evidence/`). `report.sh` (4 verdict, cổng chặn PASS thiếu evidence, BLOCKED không tính attempt). `/demo`, `/example`, `--step/--from/--to`, `--keep`, `steps`/`setup`/`cleanup` trong example. `coverage.sh` (Python/coverage.py hoặc `coverage.cmd` tùy biến, schema chuẩn hóa, changed-file scope, gap report + classify + tester dùng). `coverage.sh baseline|ratchet` (hai tầng, baseline gắn commit + tool + fingerprint, `coverage.mode: gate` chặn ở cuối phiên). M7 Node (vitest/jest/c8/nyc qua Istanbul JSON, chạy thật với c8), M8 Go (cover profile, không có branch: `null`; chỉ test bằng profile giả, chưa chạy với go toolchain thật). Chưa làm: M11 mutation; adapter playwright chưa có. Thay thế phần "tester thử 3-5 input" trong `agents/tester.md`.
+Trạng thái (phiên bản 0.0.1, pre-release): **M1-M10 đã implement (trừ M11)** (examples inline + khóa spec, `red`, claim gate; `replay.sh` + adapter http/cli, evidence ở `.harness/evidence/`). `report.sh` (4 verdict, cổng chặn PASS thiếu evidence, BLOCKED không tính attempt). `/demo`, `/example`, `--step/--from/--to`, `--keep`, `steps`/`setup`/`cleanup` trong example. `coverage.sh` (Python/coverage.py hoặc `coverage.cmd` tùy biến, schema chuẩn hóa, changed-file scope, gap report + classify + tester dùng). `coverage.sh baseline|ratchet` (hai tầng, baseline gắn commit + tool + fingerprint, `coverage.mode: gate` chặn ở cuối phiên). M7 Node (vitest/jest/c8/nyc qua Istanbul JSON, chạy thật với c8), M8 Go (cover profile, không có branch: `null`; chỉ test bằng profile giả, chưa chạy với go toolchain thật). Chưa làm: M11 mutation; adapter playwright chưa có. Thay thế phần "tester thử 3-5 input" trong `agents/tester.md`.
 
 ## Nguyên tắc
 
@@ -143,3 +143,11 @@ Coverage chưa được công bố là tính năng chính thức trước khi c�
 ## Việc phải nối với code hiện có
 
 - `agents/{initializer,planner,coder,tester}.md`, `scripts/feature-list.sh` (validate + `SPEC_*` khóa examples), `scripts/harness-step.sh` (pipeline, trạng thái BLOCKED/INCONCLUSIVE, hiện tester `fail` cả feature khi app hỏng), `scripts/harness-setup.sh`, `templates/config.json`, `.gitignore`, `commands/demo.md`, `commands/example.md`, `tests/run-tests.sh`.
+
+## Việc còn lại sau 0.0.1
+
+- **M11:** kiểm tra tĩnh test không có assertion (heuristic), rồi mutation testing trên file đã đổi (mutmut, Stryker), rồi tester tự đột biến trong worktree tạm.
+- **`raw_body`** cho adapter `http` (gửi body không phải JSON chuẩn, ví dụ `NaN`); phát hiện từ lần chạy thật đầu tiên.
+- **Adapter Playwright** cho preset `web`.
+- **Coverage theo từng feature** (execution tracing / coverage contexts) thay vì theo phiên.
+- Chạy thật jest, vitest, nyc và Go trên project thật; chạy loop thật với coder song song và example.
