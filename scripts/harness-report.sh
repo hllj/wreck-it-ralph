@@ -82,6 +82,9 @@ if [[ -f "$HARNESS_DIR/coverage/$ID.json" ]]; then
          by_class: (map(select(.classification != null) | .classification) | group_by(.) | map({key: .[0], value: length}) | from_entries)})}' <<<"$cov")"
   fi
 fi
+if [[ "$cov" != null && -f "$HARNESS_DIR/coverage/$ID-ratchet.json" ]]; then
+  cov="$(jq -c --slurpfile r "$HARNESS_DIR/coverage/$ID-ratchet.json" '. + {ratchet: ($r[0] | {verdict, mode, reason, regressions, baseline_commit})}' <<<"$cov")"
+fi
 jq -n --arg id "$ID" --arg s "$status" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$(git rev-parse HEAD 2>/dev/null || echo none)" \
       --arg note "$NOTE" --argjson sum "$summary" --argjson r "$results" --argjson cov "$cov" \
   '{feature_id: $id, status: $s, tested_at: $at, commit_sha: $sha, examples: $sum, coverage: $cov, note: $note, results: $r,
@@ -93,7 +96,7 @@ jq -n --arg id "$ID" --arg s "$status" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "- Examples: $(jq -r '"\(.examples.passed)/\(.examples.total) passed, \(.examples.failed) failed, \(.examples.not_run) not run"' "$DIR/report.json")"
   [[ -n "$NOTE" ]] && echo "- Note: $NOTE"
   echo
-  jq -r 'if .coverage then "- Coverage (\(.coverage.scope), \(.coverage.note)): lines \(.coverage.changed_files.lines.covered)/\(.coverage.changed_files.lines.total)" + (if .coverage.changed_files.branches then ", branches \(.coverage.changed_files.branches.covered)/\(.coverage.changed_files.branches.total)" else ", branches n/a" end) + (if .coverage.gaps then "; gaps \(.coverage.gaps.total), unclassified \(.coverage.gaps.unclassified)" else "" end) else empty end' "$DIR/report.json"
+  jq -r 'if .coverage then "- Coverage (\(.coverage.scope), \(.coverage.note)): lines \(.coverage.changed_files.lines.covered)/\(.coverage.changed_files.lines.total)" + (if .coverage.changed_files.branches then ", branches \(.coverage.changed_files.branches.covered)/\(.coverage.changed_files.branches.total)" else ", branches n/a" end) + (if .coverage.gaps then "; gaps \(.coverage.gaps.total), unclassified \(.coverage.gaps.unclassified)" else "" end) + (if .coverage.ratchet then "; ratchet \(.coverage.ratchet.verdict) (\(.coverage.ratchet.mode))" else "" end) else empty end' "$DIR/report.json"
   echo
   echo "## Replay evidence"
   jq -r '.results[] | "- \(.example) \(.name): **\(.status | ascii_upcase)** (\(.evidence))"' "$DIR/report.json"

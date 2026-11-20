@@ -4,6 +4,8 @@
 # Usage: coverage.sh run [--id ID] [--since REF]      run the test suite under coverage, write normalized reports
 #        coverage.sh gaps <ID> [--all]                list the un-executed branches/lines of the files ID changed
 #        coverage.sh classify <ID> <GAP> <class> <confidence> "<reason>" ["<evidence>"] ["<action>"]
+#        coverage.sh baseline [--update | --accept-decrease "<reason>"]   record / raise / (human) lower the baseline
+#        coverage.sh ratchet [--id ID]                compare with the baseline: repository + changed files
 #        coverage.sh check <ID>                       exit 1 while gaps are still unclassified
 #        coverage.sh show <ID>                        summary + gap counts
 # Exit:  0 ok, 1 check failed, 2 usage / error, 4 coverage not available or not configured
@@ -25,6 +27,15 @@
 # reached), with a confidence (high|medium|low). Agents never delete code because of a gap and never write tests
 # just to lift a number; needs_example becomes a proposal a human approves.
 #
+# Ratchet (M10): coverage must not DECREASE; it is never a target. Two tiers: repository, and every changed file that
+# has a baseline entry (new files: reported, not gated; renames follow `git diff -M`). Exact covered/total ratios are
+# compared (rounded percentages never), branches when both sides have branch data, else lines. The baseline
+# (.harness/coverage/baseline.json, committed) is tied to a commit, the tool version and a config fingerprint; if
+# these differ, or the test run failed, the comparison is "not comparable" (exit 4) and never blocks. `baseline`
+# only raises (--update) and refuses inside a loop session; lowering needs --accept-decrease with a reason (human).
+# coverage.mode "report" (default) is advisory; "gate" makes step.sh end fail features passed in a session that
+# regressed. Config coverage.ratchet: {enabled, scope[repository|changed_files], allow_new_files, tolerance (pp)}.
+#
 # Config (.harness/config.json -> coverage): tool ("" = auto: python), cmd (custom command that runs the tests and
 # writes a coverage.py-format JSON to $COVERAGE_JSON), branch (true), omit (globs), max_gaps (50).
 
@@ -35,6 +46,7 @@ die() { echo "coverage: $*" >&2; exit 2; }
 command -v jq >/dev/null || die "jq is required"
 cfg() { jq -r "$1" "$CFG" 2>/dev/null; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+sha256() { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi | cut -d' ' -f1; }
 
 CLASSES="needs_example redundant_code defensive_branch inconclusive verified_by_probe"
 CONFS="high medium low"
@@ -70,7 +82,7 @@ cmd_run() {
     local py omit branch_flag="--branch"; py="$(python_bin)"
     "$py" -m coverage --version >/dev/null 2>&1 || { echo "coverage: coverage.py is not installed for $py. Install it INTO THE PROJECT env (e.g. .venv/bin/pip install coverage pytest), or set coverage.cmd" >&2; return 4; }
     omit="$(cfg '(.coverage.omit // []) | if length == 0 then ["*/tests/*","tests/*","*/test_*.py","test_*.py","*_test.py","conftest.py"] else . end | . + [".venv/*","venv/*","*/site-packages/*",".harness/*"] | join(",")')"
-    [[ "$(cfg '.coverage.branch // true')" == false ]] && branch_flag=""
+    [[ "$(cfg 'if .coverage.branch == null then true else .coverage.branch end')" == false ]] && branch_flag=""
     export COVERAGE_FILE="$COV/.coverage"
     "$py" -m coverage erase >/dev/null 2>&1
     "$py" -m coverage run $branch_flag --source=. --omit="$omit" -m pytest -q > "$COV/run.log" 2>&1 < /dev/null || rc=$?
@@ -78,10 +90,11 @@ cmd_run() {
   else
     echo "coverage: not configured: no supported project type detected (python only for now). Set coverage.tool or coverage.cmd in $CFG" >&2; return 4
   fi
-  jq -n --slurpfile r "$raw" --arg sha "$sha" --arg at "$at" --argjson rc "$rc" "$LIB"'
+  local fp; fp="$(jq -cS '{tool: (.coverage.tool // ""), cmd: (.coverage.cmd // ""), branch: (if .coverage.branch == null then true else .coverage.branch end), omit: (.coverage.omit // [])}' "$CFG" 2>/dev/null | sha256)"
+  jq -n --slurpfile r "$raw" --arg sha "$sha" --arg at "$at" --argjson rc "$rc" --arg fp "$fp" "$LIB"'
     $r[0] as $raw | ($raw.meta.branch_coverage // false) as $br
     | { schema_version: 1, tool: "coverage.py", tool_version: ($raw.meta.version // null), scope: "repository", commit_sha: $sha, generated_at: $at,
-        branch_data: $br, tests_exit_code: $rc,
+        config_fingerprint: $fp, branch_data: $br, tests_exit_code: $rc,
         files: ($raw.files | to_entries | map(.key as $p | .value as $f | ($f.summary) as $s | {
           path: $p,
           lines: {covered: $s.covered_lines, total: $s.num_statements, percent: pct($s.covered_lines; $s.num_statements)},
@@ -109,7 +122,7 @@ cmd_run() {
         '. + [($repo[0].files[] | select(.path == $p)) + {diff_ranges: $r}]' <<<"$files_json")"
   done < <(git diff --name-only "$SINCE" -- 2>/dev/null)
   jq -n --slurpfile repo "$COV/repository.json" --argjson files "$files_json" --arg id "$ID" --arg since "$SINCE" "$LIB"'
-    $repo[0] | {schema_version, tool, tool_version, commit_sha, generated_at, branch_data, tests_exit_code,
+    $repo[0] | {schema_version, tool, tool_version, commit_sha, generated_at, config_fingerprint, branch_data, tests_exit_code,
                 scope: "changed_files", feature_id: $id, since: $since, note: "changed-file coverage, not feature coverage",
                 repository_summary: .summary, files: $files}
     | . + {summary: (.files | summ)}' > "$COV/$ID.json"
@@ -216,6 +229,97 @@ cmd_show() {
   return 0
 }
 
+# ------------------------------------------------------------------------------------------------ baseline + ratchet
+BASE="$COV/baseline.json"
+in_session() { [[ "$(jq -r '.in_session // false' "$HARNESS_DIR/.step_state.json" 2>/dev/null)" == true ]]; }
+
+cmd_baseline() {
+  local mode=create reason=""
+  case "${1:-}" in
+    "") ;;
+    --update) mode=update ;;
+    --accept-decrease) mode=decrease; reason="${2:-}"; [[ -n "$reason" ]] || die 'usage: baseline --accept-decrease "<reason>"' ;;
+    *) die 'usage: baseline [--update | --accept-decrease "<reason>"]' ;;
+  esac
+  in_session && die "the baseline is changed by a human between sessions, not by an agent inside a loop session"
+  local repo="$COV/repository.json"; [[ -f "$repo" ]] || die "no $repo: run 'coverage.sh run' first"
+  [[ "$(jq -r '.tests_exit_code' "$repo")" == 0 ]] || die "the last test run failed (exit $(jq -r '.tests_exit_code' "$repo")): coverage of a red suite is not a baseline"
+  if [[ -f "$BASE" && "$mode" == create ]]; then die "$BASE exists: use --update to raise it (or --accept-decrease \"<reason>\")"; fi
+  if [[ ! -f "$BASE" && "$mode" != create ]]; then mode=create; fi
+  local old='{}'; [[ -f "$BASE" ]] && old="$(cat "$BASE")"
+  if [[ "$mode" != create ]]; then
+    [[ "$(jq -r '.config_fingerprint' <<<"$old")" == "$(jq -r '.config_fingerprint' "$repo")" ]] || die "the coverage config changed since the baseline (fingerprint differs); re-create it deliberately: rm $BASE && coverage.sh baseline"
+  fi
+  jq -n --argjson old "$old" --slurpfile repo "$repo" --arg mode "$mode" --arg reason "$reason" --arg at "$(now)" "$LIB"'
+    def rt($x): if ($x == null) or ($x.total // 0) == 0 then null else ($x.covered / $x.total) end;
+    def better($a; $b): (rt($a)) as $ra | (rt($b)) as $rb | if $rb == null then $a elif $ra == null then $b elif $ra >= $rb then $a else $b end;
+    $repo[0] as $r
+    | ($r.files | map({key: .path, value: {lines: {covered: .lines.covered, total: .lines.total}, branches: (if .branches then {covered: .branches.covered, total: .branches.total} else null end)}}) | from_entries) as $cur
+    | (if $mode == "update" then
+         ($cur | with_entries(.key as $k | .value as $v | ($old.files[$k] // null) as $o
+            | .value = (if $o == null then $v else {lines: better($v.lines; $o.lines), branches: (if $v.branches == null or $o.branches == null then ($v.branches // $o.branches) else better($v.branches; $o.branches) end)} end)))
+       else $cur end) as $files
+    | (if $mode == "update" then {lines: better($r.summary.lines; $old.repository.lines), branches: (if $r.summary.branches == null or $old.repository.branches == null then ($r.summary.branches // $old.repository.branches) else better($r.summary.branches; $old.repository.branches) end)}
+       else {lines: {covered: $r.summary.lines.covered, total: $r.summary.lines.total}, branches: (if $r.summary.branches then {covered: $r.summary.branches.covered, total: $r.summary.branches.total} else null end)} end) as $repo_sum
+    | {schema_version: 1, created_at: ($old.created_at // $at), updated_at: $at, commit_sha: $r.commit_sha, tool: $r.tool, tool_version: $r.tool_version,
+       config_fingerprint: $r.config_fingerprint, branch_data: $r.branch_data,
+       repository: $repo_sum, files: $files,
+       history: (($old.history // []) + [{at: $at, commit_sha: $r.commit_sha, action: $mode, reason: (if $reason == "" then null else $reason end)}])}' > "$BASE.tmp" \
+    && mv "$BASE.tmp" "$BASE" || die "could not write the baseline"
+  echo "coverage: baseline $mode at $(jq -r '.commit_sha' "$BASE" | cut -c1-10): $(jq -r '"lines \(.repository.lines.covered)/\(.repository.lines.total)" + (if .repository.branches then ", branches \(.repository.branches.covered)/\(.repository.branches.total)" else ", branches n/a" end)' "$BASE")  ($BASE: commit it)"
+}
+
+cmd_ratchet() {
+  local ID=""; [[ "${1:-}" == "--id" ]] && ID="${2:-}"
+  local repo="$COV/repository.json"; [[ -f "$repo" ]] || die "no $repo: run 'coverage.sh run${ID:+ --id $ID}' first"
+  local out="$COV/${ID:-repository}-ratchet.json" mode scope tol allow
+  mode="$(cfg '.coverage.mode // "report"')"; tol="$(cfg '.coverage.ratchet.tolerance // 0')"; allow="$(cfg 'if .coverage.ratchet.allow_new_files == null then true else .coverage.ratchet.allow_new_files end')"
+  scope="$(cfg '(.coverage.ratchet.scope // ["repository","changed_files"]) | @json')"
+  if [[ "$(cfg 'if .coverage.ratchet.enabled == null then true else .coverage.ratchet.enabled end')" == false ]]; then echo "coverage: ratchet disabled (coverage.ratchet.enabled=false)"; return 0; fi
+  local verdict="" why=""
+  if [[ ! -f "$BASE" ]]; then verdict=not_comparable; why="no baseline: run 'coverage.sh baseline' (human, between sessions) and commit it"
+  elif [[ "$(jq -r '.tests_exit_code' "$repo")" != 0 ]]; then verdict=not_comparable; why="the test run failed (exit $(jq -r '.tests_exit_code' "$repo")): coverage of a red suite is not comparable"
+  elif [[ "$(jq -r '.config_fingerprint' "$BASE")" != "$(jq -r '.config_fingerprint' "$repo")" ]]; then verdict=not_comparable; why="the coverage config changed since the baseline (fingerprint differs)"
+  elif [[ "$(jq -r '.tool' "$BASE")" != "$(jq -r '.tool' "$repo")" || "$(jq -r '.tool_version // "" | split(".")[0]' "$BASE")" != "$(jq -r '.tool_version // "" | split(".")[0]' "$repo")" ]]; then verdict=not_comparable; why="coverage tool or its major version changed since the baseline"
+  fi
+  if [[ -n "$verdict" ]]; then
+    jq -n --arg v "$verdict" --arg w "$why" --arg m "$mode" --arg id "$ID" --arg at "$(now)" '{feature_id: $id, verdict: $v, reason: $w, mode: $m, at: $at, repository: null, files: []}' > "$out"
+    echo "coverage: ratchet not comparable: $why" >&2; return 4
+  fi
+  # file renames since the baseline commit (new path -> old path)
+  local renames="{}" bsha; bsha="$(jq -r '.commit_sha' "$BASE")"
+  if git rev-parse -q --verify "$bsha^{commit}" >/dev/null 2>&1; then
+    renames="$(git diff --name-status -M "$bsha" HEAD 2>/dev/null | jq -R -s -c 'split("\n") | map(select(startswith("R")) | split("\t") | {key: .[2], value: .[1]}) | from_entries')"
+  fi
+  local changed="$COV/$ID.json"; [[ -n "$ID" && -f "$changed" ]] || changed=/dev/null
+  local cf='{"files": []}'; [[ "$changed" != /dev/null ]] && cf="$(cat "$changed")"
+  jq -n --slurpfile base "$BASE" --slurpfile repo "$repo" --argjson cf "$cf" --argjson ren "$renames" --argjson scope "$scope" --argjson tol "$tol" \
+        --argjson allow "$allow" --arg mode "$mode" --arg id "$ID" --arg at "$(now)" '
+    def lt($n; $o): if ($o.total // 0) == 0 or ($n.total // 0) == 0 then false
+      elif $tol == 0 then ($n.covered * $o.total) < ($o.covered * $n.total)
+      else ((($o.covered / $o.total) - ($n.covered / $n.total)) * 100) > $tol end;
+    def cmp($n; $o): (if ($n.branches != null and $o.branches != null) then "branches" else "lines" end) as $m
+      | {metric: $m, old: $o[$m], new: $n[$m], regressed: lt($n[$m]; $o[$m])};
+    def slim($s): {lines: {covered: $s.lines.covered, total: $s.lines.total}, branches: (if $s.branches then {covered: $s.branches.covered, total: $s.branches.total} else null end)};
+    $base[0] as $b | $repo[0] as $r
+    | (if ($scope | index("repository")) then (cmp(slim($r.summary); $b.repository) + {scope: "repository"}) else null end) as $rt
+    | (if ($scope | index("changed_files")) then
+         ($cf.files | map(. as $f | ($ren[$f.path] // $f.path) as $key | ($b.files[$key] // null) as $o
+            | if $o != null then (cmp(slim($f); $o) + {scope: "changed_file", path: $f.path, baseline_path: $key, status: "compared"})
+              elif $allow then {scope: "changed_file", path: $f.path, status: "new_file", regressed: false}
+              else (cmp(slim($f); $b.repository) + {scope: "changed_file", path: $f.path, status: "new_file_vs_repository", baseline_path: null}) end))
+       else [] end) as $ft
+    | ([$rt] | map(select(. != null))) + $ft | map(select(.regressed)) as $bad
+    | {feature_id: $id, verdict: (if ($bad | length) > 0 then "regressed" else "ok" end), mode: $mode, at: $at, baseline_commit: $b.commit_sha, current_commit: $r.commit_sha,
+       tolerance_pp: $tol, repository: $rt, files: $ft, regressions: ($bad | map(if .scope == "repository" then "repository \(.metric) \(.old.covered)/\(.old.total) -> \(.new.covered)/\(.new.total)" else "\(.path) \(.metric) \(.old.covered)/\(.old.total) -> \(.new.covered)/\(.new.total)" end))}' > "$out" \
+    || die "could not compute the ratchet"
+  local v; v="$(jq -r .verdict "$out")"
+  if [[ "$v" == regressed ]]; then
+    echo "coverage: RATCHET REGRESSED (mode $mode$([[ "$mode" == gate ]] || echo ", advisory")): $(jq -r '.regressions | join("; ")' "$out")" >&2; return 1
+  fi
+  echo "coverage: ratchet ok vs baseline $(jq -r '.baseline_commit' "$out" | cut -c1-10) ($(jq '[.files[] | select(.status == "compared")] | length' "$out") changed file(s) compared, $(jq '[.files[] | select(.status == "new_file")] | length' "$out") new)"
+}
+
 c="${1:-}"; shift || true
 case "$c" in
   run) cmd_run "$@" ;;
@@ -223,5 +327,7 @@ case "$c" in
   classify) cmd_classify "$@" ;;
   check) cmd_check "$@" ;;
   show) cmd_show "$@" ;;
-  *) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  baseline) cmd_baseline "$@" ;;
+  ratchet) cmd_ratchet "$@" ;;
+  *) sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

@@ -1,6 +1,6 @@
 # Roadmap v4: Evidence-Based Testing
 
-Trạng thái: **M1-M6, M9 đã implement** (examples inline + khóa spec, `red`, claim gate; `replay.sh` + adapter http/cli, evidence ở `.harness/evidence/`). `report.sh` (4 verdict, cổng chặn PASS thiếu evidence, BLOCKED không tính attempt). `/demo`, `/example`, `--step/--from/--to`, `--keep`, `steps`/`setup`/`cleanup` trong example. `coverage.sh` (Python/coverage.py hoặc `coverage.cmd` tùy biến, schema chuẩn hóa, changed-file scope, gap report + classify + tester dùng). Chưa làm: M7 Node, M8 Go, M10 ratchet, M11 mutation; adapter playwright chưa có. Thay thế phần "tester thử 3-5 input" trong `agents/tester.md`.
+Trạng thái: **M1-M6, M9, M10 đã implement** (examples inline + khóa spec, `red`, claim gate; `replay.sh` + adapter http/cli, evidence ở `.harness/evidence/`). `report.sh` (4 verdict, cổng chặn PASS thiếu evidence, BLOCKED không tính attempt). `/demo`, `/example`, `--step/--from/--to`, `--keep`, `steps`/`setup`/`cleanup` trong example. `coverage.sh` (Python/coverage.py hoặc `coverage.cmd` tùy biến, schema chuẩn hóa, changed-file scope, gap report + classify + tester dùng). `coverage.sh baseline|ratchet` (hai tầng, baseline gắn commit + tool + fingerprint, `coverage.mode: gate` chặn ở cuối phiên). Chưa làm: M7 Node, M8 Go, M11 mutation; adapter playwright chưa có. Thay thế phần "tester thử 3-5 input" trong `agents/tester.md`.
 
 ## Nguyên tắc
 

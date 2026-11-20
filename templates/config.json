@@ -45,7 +45,13 @@
     "branch": true,
     "omit": [],
     "max_gaps": 50,
-    "mode": "report"
+    "mode": "report",
+    "ratchet": {
+      "enabled": true,
+      "scope": ["repository", "changed_files"],
+      "allow_new_files": true,
+      "tolerance": 0
+    }
   },
   "replay": {
     "adapter": "",

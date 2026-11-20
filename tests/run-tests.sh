@@ -208,6 +208,99 @@ if [[ -n "$PYC" ]]; then
   check "real coverage.py: branch gap found in the diff only" '$CV run --id F001 --since HEAD~1 >$LOGD/c9.log 2>&1 && $CV gaps F001 >/dev/null 2>&1 && jq -e "(.gaps | length) >= 1 and all(.gaps[]; .line >= 6)" .harness/coverage/F001-gaps.json >/dev/null'
 fi
 
+echo "coverage baseline + ratchet"
+mkcov() { local out="$1"; shift; local f="" spec p cl tl cb tb; for spec in "$@"; do IFS=: read -r p cl tl cb tb <<<"$spec"; f="$f{\"$p\":{\"missing_lines\":[],\"missing_branches\":[],\"summary\":{\"covered_lines\":$cl,\"num_statements\":$tl,\"covered_branches\":$cb,\"num_branches\":$tb}}},"; done
+  jq -n --argjson fs "[${f%,}]" --arg br "${BR:-true}" '{meta:{version:"7.1",branch_coverage:($br=="true")},files:($fs|add)}' > "$out"; }
+new_project 2
+CV=.harness/coverage.sh; CUR=$LOGD/cur.json
+seq 1 20 > a.py; printf 'b1\n' > b.py; git add -A; git commit -qm base
+jq --arg c "cp $CUR \$COVERAGE_JSON" '.coverage.cmd = $c' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+mkcov $CUR a.py:9:10:9:10 b.py:1:10:1:10
+$CV run >/dev/null 2>&1
+check "ratchet without a baseline is not comparable (4)" '$CV ratchet >/dev/null 2>&1; [[ $? -eq 4 ]]'
+check "baseline created"                  '$CV baseline >/dev/null 2>&1 && [[ "$(jq -r .repository.branches.covered .harness/coverage/baseline.json)" == 10 && "$(jq -r .commit_sha .harness/coverage/baseline.json)" != "" ]]'
+check "baseline is not overwritten silently" '! $CV baseline >/dev/null 2>&1'
+check "baseline records the config fingerprint + history" 'jq -e ".config_fingerprint != null and (.history | length) == 1" .harness/coverage/baseline.json >/dev/null'
+git add -A; git commit -qm "baseline" -q
+echo a2 >> a.py; git add -A; git commit -qm "feat: F001 touches a.py"
+# repository goes UP (10/20 -> 11/20) but a.py, the changed file, goes DOWN (9/10 -> 6/10)
+mkcov $CUR a.py:6:10:6:10 b.py:5:10:5:10
+$CV run --id F001 --since HEAD~1 >/dev/null 2>&1
+check "repo up but changed file down => regressed (tier 2)" '$CV ratchet --id F001 >$LOGD/r1.log 2>&1; [[ $? -eq 1 ]] && grep -q "a.py branches 9/10 -> 6/10" $LOGD/r1.log && jq -e ".repository.regressed == false" .harness/coverage/F001-ratchet.json >/dev/null'
+mkcov $CUR a.py:9:10:9:10 b.py:2:10:2:10
+$CV run --id F001 --since HEAD~1 >/dev/null 2>&1
+check "changed file kept, repo up => ok"    '$CV ratchet --id F001 >/dev/null 2>&1'
+mkcov $CUR a.py:9:10:9:10 b.py:0:10:0:10
+$CV run --id F001 --since HEAD~1 >/dev/null 2>&1
+check "repository drop alone => regressed (tier 1)" '! $CV ratchet --id F001 >/dev/null 2>&1 && jq -e ".repository.regressed == true" .harness/coverage/F001-ratchet.json >/dev/null'
+mkcov $CUR a.py:18:20:18:20 b.py:1:10:1:10
+$CV run --id F001 --since HEAD~1 >/dev/null 2>&1
+check "equal ratio with other totals is ok (exact, not rounded)" '$CV ratchet --id F001 >/dev/null 2>&1'
+mkcov $CUR a.py:899:1000:899:1000 b.py:1:10:1:10
+$CV run --id F001 --since HEAD~1 >/dev/null 2>&1
+check "a tiny drop (89.9% vs 90%) is a regression at tolerance 0" '! $CV ratchet --id F001 >/dev/null 2>&1'
+jq '.coverage.ratchet.tolerance = 1' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+check "tolerance in percentage points allows it" '$CV ratchet --id F001 >/dev/null 2>&1'
+jq '.coverage.ratchet.tolerance = 0' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+# new file: reported, not gated
+printf 'c1\n' > c.py; git add -A; git commit -qm "feat: F002 adds c.py" -q
+mkcov $CUR a.py:9:10:9:10 b.py:1:10:1:10 c.py:10:10:10:10
+$CV run --id F002 --since HEAD~1 >/dev/null 2>&1
+check "a new file is reported (no baseline), not gated" '$CV ratchet --id F002 >/dev/null 2>&1 && jq -e "[.files[] | select(.status == \"new_file\")] | length == 1" .harness/coverage/F002-ratchet.json >/dev/null'
+# rename follows git
+git mv a.py a_new.py; git commit -qm "refactor: rename" -q
+mkcov $CUR a_new.py:6:10:6:10 b.py:1:10:1:10
+$CV run --id F003 --since HEAD~1 >/dev/null 2>&1
+check "renamed file is compared with its old baseline" '! $CV ratchet --id F003 >$LOGD/r2.log 2>&1 && grep -q "a_new.py branches 9/10 -> 6/10" $LOGD/r2.log'
+# no branch data on either side: falls back to lines, labelled
+BR=false mkcov $CUR a_new.py:6:10:0:0 b.py:1:10:0:0
+$CV run --id F003 --since HEAD~1 >/dev/null 2>&1
+check "branch data missing => not comparable (config/branch mode differs from baseline) or lines" '$CV ratchet --id F003 >/dev/null 2>&1; rc=$?; [[ $rc -eq 1 || $rc -eq 4 ]]'
+# not comparable: config changed, red suite
+mkcov $CUR a_new.py:9:10:9:10 b.py:1:10:1:10
+jq '.coverage.omit = ["x/*"]' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+$CV run >/dev/null 2>&1
+check "changed coverage config => not comparable" '$CV ratchet >/dev/null 2>&1; [[ $? -eq 4 ]]'
+jq '.coverage.omit = []' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+jq --arg c "cp $CUR \$COVERAGE_JSON; false" '.coverage.cmd = $c' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+$CV run >/dev/null 2>&1
+check "red test suite => not comparable, baseline refused" '$CV ratchet >/dev/null 2>&1; [[ $? -eq 4 ]] && ! $CV baseline --update >/dev/null 2>&1'
+jq --arg c "cp $CUR \$COVERAGE_JSON" '.coverage.cmd = $c' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+# baseline --update only raises; --accept-decrease lowers
+mkcov $CUR a_new.py:10:10:10:10 b.py:1:10:1:10
+$CV run >/dev/null 2>&1; $CV baseline --update >/dev/null 2>&1
+check "--update raises a file's baseline"   '[[ "$(jq -r ".files[\"a_new.py\"].branches.covered" .harness/coverage/baseline.json)" == 10 ]]'
+mkcov $CUR a_new.py:7:10:7:10 b.py:3:10:3:10
+$CV run >/dev/null 2>&1; $CV baseline --update >/dev/null 2>&1
+check "--update never lowers, but raises the others" '[[ "$(jq -r ".files[\"a_new.py\"].branches.covered" .harness/coverage/baseline.json)" == 10 && "$(jq -r ".files[\"b.py\"].branches.covered" .harness/coverage/baseline.json)" == 3 ]]'
+check "--accept-decrease needs a reason"    '! $CV baseline --accept-decrease >/dev/null 2>&1'
+check "--accept-decrease lowers and records why" '$CV baseline --accept-decrease "removed dead module" >/dev/null 2>&1 && [[ "$(jq -r ".files[\"a_new.py\"].branches.covered" .harness/coverage/baseline.json)" == 7 && "$(jq -r ".history[-1].reason" .harness/coverage/baseline.json)" == "removed dead module" ]]'
+echo '{"in_session": true}' > .harness/.step_state.json
+check "baseline is refused inside a loop session" '! $CV baseline --update >/dev/null 2>&1'
+rm -f .harness/.step_state.json
+jq '.coverage.ratchet.enabled = false' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+check "ratchet can be disabled"             'out_has "ratchet disabled" $CV ratchet'
+
+# gate mode: a session whose passed features lowered coverage is failed
+new_project 2
+jq --arg c "cp $CUR \$COVERAGE_JSON" '.coverage.cmd = $c | .coverage.mode = "gate"' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+.harness/step.sh trust accept >/dev/null
+mkcov $CUR a.py:9:10:9:10
+.harness/coverage.sh run >/dev/null 2>&1; .harness/coverage.sh baseline >/dev/null 2>&1; git add -A; git commit -qm baseline -q
+mkcov $CUR a.py:5:10:5:10
+check "gate: regression fails the feature the tester passed" '.harness/run.sh --once >$LOGD/g2.log 2>&1; [[ "$(.harness/feature-list.sh show F001 | jq -r .status)" == failing ]] && .harness/feature-list.sh show F001 | jq -r .notes | grep -q "coverage ratchet regressed"'
+new_project 2
+jq --arg c "cp $CUR \$COVERAGE_JSON" '.coverage.cmd = $c | .coverage.mode = "gate"' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+.harness/step.sh trust accept >/dev/null
+mkcov $CUR a.py:9:10:9:10
+.harness/coverage.sh run >/dev/null 2>&1; .harness/coverage.sh baseline >/dev/null 2>&1; git add -A; git commit -qm baseline -q
+check "gate: no regression => feature passes" '.harness/run.sh --once >$LOGD/g3.log 2>&1; [[ "$(.harness/feature-list.sh show F001 | jq -r .status)" == passing ]]'
+new_project 2
+jq --arg c "cp $CUR \$COVERAGE_JSON" '.coverage.cmd = $c | .coverage.mode = "gate"' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+.harness/step.sh trust accept >/dev/null; git add -A; git commit -qm cfg -q
+mkcov $CUR a.py:1:10:1:10
+check "gate: no baseline => warns, never blocks" '.harness/run.sh --once >$LOGD/g4.log 2>&1; [[ "$(.harness/feature-list.sh show F001 | jq -r .status)" == passing ]] && grep -q "ratchet skipped" $LOGD/g4.log'
+
 echo "evidence-based verdicts"
 new_project 3
 RPT=.harness/report.sh

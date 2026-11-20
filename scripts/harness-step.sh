@@ -576,6 +576,27 @@ cmd_end() {
       fi
     done
   fi
+  # Coverage ratchet gate (only coverage.mode = "gate"): coverage must not drop below the committed baseline. It runs
+  # the suite once per session; features passed in a session whose coverage regressed are failed (not comparable
+  # or unavailable coverage never blocks, it only warns).
+  if [[ "$(cfg '.coverage.mode // "report"')" == gate && -n "$(newly_passing)" ]]; then
+    local crc=0 rrc=0 cids; cids="$(newly_passing | tr '\n' ' ' | sed 's/ *$//')"
+    "$PLUGIN_ROOT/scripts/harness-coverage.sh" run --id session --since "$(st_get head_before)" >/dev/null 2>"$HARNESS_DIR/sessions/.coverage.err" || crc=$?
+    if [[ $crc -eq 0 ]]; then
+      "$PLUGIN_ROOT/scripts/harness-coverage.sh" ratchet --id session >/dev/null 2>"$HARNESS_DIR/sessions/.coverage.err" || rrc=$?
+      if [[ $rrc -eq 1 ]]; then
+        local cid
+        for cid in $cids; do
+          "$FL" fail "$cid" "coverage ratchet regressed in this session: $(sed 's/^coverage: //' "$HARNESS_DIR/sessions/.coverage.err" | tr '\n' ' ' | cut -c1-260). Cover what you changed (do not delete tests or lower the bar) or ask for a deliberate baseline change" >/dev/null
+          unauth="$unauth $cid"
+        done
+        echo "harness: WARNING coverage ratchet regressed; failed:$cids" >&2
+      elif [[ $rrc -eq 4 ]]; then echo "harness: coverage ratchet skipped: $(tr '\n' ' ' < "$HARNESS_DIR/sessions/.coverage.err" | cut -c1-200)" >&2
+      fi
+    else
+      echo "harness: coverage gate skipped, coverage unavailable: $(tr '\n' ' ' < "$HARNESS_DIR/sessions/.coverage.err" | cut -c1-200)" >&2
+    fi
+  fi
   # Escalate features that keep failing so the loop can move on (skip-and-continue).
   local esc escalated="" fid fails
   esc="$(cfg '.escalate_after_failures // 3')"
