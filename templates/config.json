@@ -39,6 +39,14 @@
   "parallel": {
     "max_workers": 1
   },
+  "coverage": {
+    "tool": "",
+    "cmd": "",
+    "branch": true,
+    "omit": [],
+    "max_gaps": 50,
+    "mode": "report"
+  },
   "replay": {
     "adapter": "",
     "base_url": "",

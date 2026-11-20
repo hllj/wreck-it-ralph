@@ -98,7 +98,7 @@ mcp_path() { cfg '.mcp_config // ""'; }
 trust_material() { # everything that can run commands or steer agents with elevated rights
   jq -S '{permission_mode, allowed_tools, final_verify_command, verify_static, claude_bin, model, mcp_config,
           uses: [.pipeline[]? | .use // empty], models: [.pipeline[]? | .model // empty], hooks: (.hooks // {}),
-          rollout_push, rollout_pr, parallel} + (if .replay then {replay} else {} end)' "$CFG"
+          rollout_push, rollout_pr, parallel} + (if .replay then {replay} else {} end) + (if .coverage then {coverage: {tool: .coverage.tool, cmd: .coverage.cmd}} else {} end)' "$CFG"
   local m; m="$(mcp_path)"; if [[ -n "$m" && -f "$m" ]]; then echo "## mcp: $m"; cat "$m"; fi
   local f; for f in $(ls "$HARNESS_DIR"/agents/*.md 2>/dev/null | sort); do echo "## agent: $f"; cat "$f"; done
 }
@@ -129,6 +129,7 @@ cmd_trust() {
       echo "model:                $(cfg '.model // ""')"
       echo "final_verify_command: $(cfg '.final_verify_command // ""')"
       echo "verify_static:        $(cfg '.verify_static // ""')"
+      if [[ -n "$(cfg '.coverage.cmd // ""')" ]]; then echo "coverage.cmd:         $(cfg '.coverage.cmd') (runs the test suite under coverage)"; fi
       if [[ -n "$(cfg '.replay.command // ""')" ]]; then echo "replay.command:       $(cfg '.replay.command') (runs with example arguments; replay.base_url: $(cfg '.replay.base_url // ""'))"; fi
       local u; u="$(jq -r '.pipeline[]? | select(.use) | "  \(.name // "-"): \(.use)\(if .optional then " (optional)" else "" end)"' "$CFG")"
       if [[ -n "$u" ]]; then echo; echo "Pipeline extensions (other plugins' agents/skills, shell steps):"; echo "$u"; fi

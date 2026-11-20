@@ -150,6 +150,64 @@ check "approving appends and re-locks"    '.harness/backlog.sh approve all >/dev
 echo '{"amend":[{"id":"F001","add_examples":[{"id":"EX002","name":"dup","input":{},"expect":{"status":1}}]}]}' > $LOGD/p2.json
 check "duplicate example id is refused at propose time"   '! .harness/backlog.sh propose --by user --reason "dup" --file $LOGD/p2.json >/dev/null 2>&1'
 
+echo "coverage engine + gaps"
+new_project 2
+CV=.harness/coverage.sh
+printf 'def f(x):\n    if x:\n        return 1\n    return 2\n\ndef g(y):\n    if y > 1:\n        return "a"\n    return "b"\n' > app.py
+git add -A; git commit -qm base
+printf '\ndef h(z):\n    if z:\n        return 1\n    return 0\n' >> app.py; git add -A; git commit -qm "feat: F001"
+cat > $LOGD/fakecov.json <<'EOF2'
+{"meta":{"version":"7.0","branch_coverage":true},"files":{"app.py":{"missing_lines":[4,9,12,13],"missing_branches":[[2,4],[7,9],[11,12]],"summary":{"covered_lines":10,"num_statements":14,"num_branches":6,"covered_branches":3}}},"totals":{}}
+EOF2
+jq --arg c "cp $LOGD/fakecov.json \$COVERAGE_JSON" '.coverage.cmd = $c' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+check "run writes normalized repository report" '$CV run --id F001 --since HEAD~1 >$LOGD/c1.log 2>&1; jq -e ".schema_version == 1 and .scope == \"repository\" and .summary.lines.covered == 10 and .summary.branches.total == 6" .harness/coverage/repository.json >/dev/null'
+check "percentages are rounded but covered/total kept" '[[ "$(jq -r .summary.branches.percent .harness/coverage/repository.json)" == 50 && "$(jq -r .files[0].branches.covered .harness/coverage/repository.json)" == 3 ]]'
+check "changed-file report is labelled, not 'feature coverage'" 'jq -e ".scope == \"changed_files\" and (.note | test(\"not feature coverage\")) and (.files | length) == 1 and .files[0].diff_ranges == [[10,14]]" .harness/coverage/F001.json >/dev/null'
+check "gaps only for the changed lines" '$CV gaps F001 >$LOGD/c2.log 2>&1; [[ "$(jq -r "[.gaps[] | .line] | join(\",\")" .harness/coverage/F001-gaps.json)" == "11,13" ]]'
+check "gaps outside the diff are excluded"   '! jq -e ".gaps[] | select(.line == 2 or .line == 7)" .harness/coverage/F001-gaps.json >/dev/null'
+check "--all includes the whole changed file" '$CV gaps F001 --all >/dev/null 2>&1; jq -e ".gaps[] | select(.line == 2)" .harness/coverage/F001-gaps.json >/dev/null'
+$CV gaps F001 >/dev/null 2>&1
+check "gap has source context + in_diff"     'jq -e ".gaps[0] | .in_diff == true and (.snippet | length) > 0 and .classification == null" .harness/coverage/F001-gaps.json >/dev/null'
+check "md lists UNCLASSIFIED gaps"           'grep -q "UNCLASSIFIED" .harness/coverage/F001-gaps.md && grep -q "never taken" .harness/coverage/F001-gaps.md'
+check "check fails while unclassified"       '! $CV check F001 >/dev/null 2>&1'
+G1="$(jq -r '.gaps[0].id' .harness/coverage/F001-gaps.json)"
+check "verified_by_probe needs evidence"     '! $CV classify F001 $G1 verified_by_probe high "ran it" >/dev/null 2>&1'
+check "bad class / confidence rejected"      '! $CV classify F001 $G1 bogus high "x" >/dev/null 2>&1 && ! $CV classify F001 $G1 needs_example maybe "x" >/dev/null 2>&1'
+check "classify records it"                  '$CV classify F001 $G1 needs_example high "empty z is not in the contract" "" "propose an example" >/dev/null 2>&1 && [[ "$(jq -r ".gaps[0].classification" .harness/coverage/F001-gaps.json)" == needs_example ]]'
+check "md shows the classification"          'grep -q "Classification: needs_example (confidence high)" .harness/coverage/F001-gaps.md'
+$CV gaps F001 >/dev/null 2>&1
+check "classification survives regeneration" '[[ "$(jq -r ".gaps[] | select(.id == \"$G1\") | .classification" .harness/coverage/F001-gaps.json)" == needs_example ]]'
+for g in $(jq -r '.gaps[] | select(.classification == null) | .id' .harness/coverage/F001-gaps.json); do $CV classify F001 $g inconclusive low "unknown" >/dev/null; done
+check "check passes once all are classified" '$CV check F001 >/dev/null 2>&1'
+check "show summarizes"                      'out_has "unclassified: 0" $CV show F001'
+# no branch data => null, never 0%
+jq '.meta.branch_coverage = false' $LOGD/fakecov.json > $LOGD/fakecov2.json
+jq --arg c "cp $LOGD/fakecov2.json \$COVERAGE_JSON" '.coverage.cmd = $c' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+check "no branch data => branches null (not 0%)" '$CV run --id F001 --since HEAD~1 >/dev/null 2>&1; jq -e ".summary.branches == null and .files[0].branches == null and .files[0].missing_branches == null" .harness/coverage/F001.json >/dev/null && out_has "branches n/a" $CV show F001'
+jq '.coverage.cmd = "true"' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+check "cmd that writes no JSON exits 4"      '$CV run >/dev/null 2>&1; [[ $? -eq 4 ]]'
+jq '.coverage.cmd = "" | .coverage.tool = "cobol"' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+check "unsupported tool exits 4"             '$CV run >/dev/null 2>&1; [[ $? -eq 4 ]]'
+check "coverage reports are git-ignored, baseline is not" 'grep -qxF "coverage/*" .harness/.gitignore && grep -qxF "!coverage/baseline.json" .harness/.gitignore && grep -qxF "coverage.sh" .harness/.gitignore'
+# report.sh embeds the coverage honestly labelled
+new_project 2
+jq '.replay = {adapter:"cli", command:"echo"}' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+mkdir -p .harness/coverage
+echo '{"scope":"changed_files","note":"changed-file coverage, not feature coverage","since":"x","tool":"coverage.py","tool_version":"7","commit_sha":"abc","tests_exit_code":0,"summary":{"lines":{"covered":1,"total":2},"branches":null,"files":1},"repository_summary":{}}' > .harness/coverage/F001.json
+echo '{"gaps":[{"id":"G1","classification":null},{"id":"G2","classification":"needs_example"}]}' > .harness/coverage/F001-gaps.json
+$FL claim F001 >/dev/null; .harness/report.sh F001 pass "" >/dev/null 2>&1
+check "report.json carries labelled coverage + gap counts" 'jq -e ".coverage.scope == \"changed_files\" and .coverage.gaps.total == 2 and .coverage.gaps.unclassified == 1 and .coverage.gaps.by_class.needs_example == 1" .harness/evidence/F001/report.json >/dev/null && grep -q "not feature coverage" .harness/evidence/F001/report.md'
+# real coverage.py, when available
+PYC=""; for c in python3 "$ROOT/../.venv/bin/python"; do "$c" -m coverage --version >/dev/null 2>&1 && "$c" -m pytest --version >/dev/null 2>&1 && PYC="$c" && break; done
+if [[ -n "$PYC" ]]; then
+  new_project 2
+  mkdir tests; printf 'def checkout(cart):\n    if cart:\n        return 200\n    return 400\n' > cart.py
+  printf 'from cart import checkout\ndef test_ok():\n    assert checkout([1]) == 200\n' > tests/test_cart.py
+  git add -A; git commit -qm base
+  printf '\ndef extra(a):\n    if a:\n        return 1\n    return 2\n' >> cart.py; git add -A; git commit -qm "feat: F001"
+  check "real coverage.py: branch gap found in the diff only" '$CV run --id F001 --since HEAD~1 >$LOGD/c9.log 2>&1 && $CV gaps F001 >/dev/null 2>&1 && jq -e "(.gaps | length) >= 1 and all(.gaps[]; .line >= 6)" .harness/coverage/F001-gaps.json >/dev/null'
+fi
+
 echo "evidence-based verdicts"
 new_project 3
 RPT=.harness/report.sh

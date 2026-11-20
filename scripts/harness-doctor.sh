@@ -53,6 +53,10 @@ if [[ -f "$HARNESS_DIR/feature_list.json" ]]; then
 else
   warn "no feature list yet: run /wreck-it-ralph:init \"<goal>\""
 fi
+if [[ -f pyproject.toml || -f setup.py || -f pytest.ini || -f requirements.txt ]] && [[ -z "$(jq -r '.coverage.cmd // ""' "$CFG" 2>/dev/null)" ]]; then
+  py=python3; [[ -x .venv/bin/python ]] && py=.venv/bin/python
+  if "$py" -m coverage --version >/dev/null 2>&1; then ok "coverage.py available ($py)"; else warn "coverage.py not installed for $py: the tester cannot report coverage gaps (install it into the project env, e.g. .venv/bin/pip install coverage pytest)"; fi
+fi
 if [[ -x "$HARNESS_DIR/init.sh" ]]; then ok "init.sh executable"; elif [[ -f "$HARNESS_DIR/feature_list.json" ]]; then bad "init.sh missing or not executable"; fi
 rc=0; "$HARNESS_DIR/step.sh" trust status >/dev/null 2>&1 || rc=$?
 case $rc in

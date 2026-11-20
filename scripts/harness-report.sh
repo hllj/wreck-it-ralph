@@ -74,9 +74,17 @@ fi
 
 case "$DECISION" in pass) status=passed ;; fail) status=failed ;; *) status="$DECISION" ;; esac
 mkdir -p "$DIR"
+cov="null"
+if [[ -f "$HARNESS_DIR/coverage/$ID.json" ]]; then
+  cov="$(jq -c '{scope, note, since, tool, tool_version, commit_sha, tests_exit_code, changed_files: .summary, repository: .repository_summary}' "$HARNESS_DIR/coverage/$ID.json")"
+  if [[ -f "$HARNESS_DIR/coverage/$ID-gaps.json" ]]; then
+    cov="$(jq -c --slurpfile g "$HARNESS_DIR/coverage/$ID-gaps.json" '. + {gaps: ($g[0].gaps | {total: length, unclassified: (map(select(.classification == null)) | length),
+         by_class: (map(select(.classification != null) | .classification) | group_by(.) | map({key: .[0], value: length}) | from_entries)})}' <<<"$cov")"
+  fi
+fi
 jq -n --arg id "$ID" --arg s "$status" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$(git rev-parse HEAD 2>/dev/null || echo none)" \
-      --arg note "$NOTE" --argjson sum "$summary" --argjson r "$results" \
-  '{feature_id: $id, status: $s, tested_at: $at, commit_sha: $sha, examples: $sum, coverage: null, note: $note, results: $r,
+      --arg note "$NOTE" --argjson sum "$summary" --argjson r "$results" --argjson cov "$cov" \
+  '{feature_id: $id, status: $s, tested_at: $at, commit_sha: $sha, examples: $sum, coverage: $cov, note: $note, results: $r,
     replay: (["./.harness/replay.sh \($id)"] + ($r | map("./.harness/replay.sh \($id) --example \(.example)")))}' > "$DIR/report.json"
 {
   echo "# $ID: $(printf %s "$status" | tr a-z A-Z)"
@@ -84,6 +92,8 @@ jq -n --arg id "$ID" --arg s "$status" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "- Tested: $(jq -r .tested_at "$DIR/report.json") at commit $(jq -r .commit_sha "$DIR/report.json" | cut -c1-10)"
   echo "- Examples: $(jq -r '"\(.examples.passed)/\(.examples.total) passed, \(.examples.failed) failed, \(.examples.not_run) not run"' "$DIR/report.json")"
   [[ -n "$NOTE" ]] && echo "- Note: $NOTE"
+  echo
+  jq -r 'if .coverage then "- Coverage (\(.coverage.scope), \(.coverage.note)): lines \(.coverage.changed_files.lines.covered)/\(.coverage.changed_files.lines.total)" + (if .coverage.changed_files.branches then ", branches \(.coverage.changed_files.branches.covered)/\(.coverage.changed_files.branches.total)" else ", branches n/a" end) + (if .coverage.gaps then "; gaps \(.coverage.gaps.total), unclassified \(.coverage.gaps.unclassified)" else "" end) else empty end' "$DIR/report.json"
   echo
   echo "## Replay evidence"
   jq -r '.results[] | "- \(.example) \(.name): **\(.status | ascii_upcase)** (\(.evidence))"' "$DIR/report.json"
