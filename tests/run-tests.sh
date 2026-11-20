@@ -208,6 +208,42 @@ if [[ -n "$PYC" ]]; then
   check "real coverage.py: branch gap found in the diff only" '$CV run --id F001 --since HEAD~1 >$LOGD/c9.log 2>&1 && $CV gaps F001 >/dev/null 2>&1 && jq -e "(.gaps | length) >= 1 and all(.gaps[]; .line >= 6)" .harness/coverage/F001-gaps.json >/dev/null'
 fi
 
+echo "coverage: node (istanbul) + go"
+new_project 2
+CV=.harness/coverage.sh
+mkdir -p node_modules/x test; printf 'l1\nl2\nl3\nl4\nl5\nl6\n' > app.js; echo 1 > node_modules/x/i.js; echo 1 > test/app.test.js; git add -A -f; git commit -qm base
+printf 'l7\n' >> app.js; git add -A; git commit -qm "feat: F001"
+jq -n --arg cwd "$PWD" '{
+  ($cwd + "/app.js"): {path: ($cwd + "/app.js"), statementMap: {"0": {start: {line: 2}}, "1": {start: {line: 3}}, "2": {start: {line: 5}}}, s: {"0": 1, "1": 1, "2": 0},
+     branchMap: {"0": {type: "if", loc: {start: {line: 2}}, locations: [{start: {line: 3}}, {start: {}}]}}, b: {"0": [1, 0]}},
+  ($cwd + "/node_modules/x/i.js"): {path: ($cwd + "/node_modules/x/i.js"), statementMap: {"0": {start: {line: 1}}}, s: {"0": 0}, branchMap: {}, b: {}},
+  ($cwd + "/test/app.test.js"): {path: ($cwd + "/test/app.test.js"), statementMap: {"0": {start: {line: 1}}}, s: {"0": 0}, branchMap: {}, b: {}}}' > $LOGD/istanbul.json
+jq --arg c "cp $LOGD/istanbul.json \$COVERAGE_JSON" '.coverage.cmd = $c | .coverage.format = "istanbul" | .coverage.runner = "vitest"' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+check "istanbul: converted, paths relative, node_modules/tests omitted" '$CV run --id F001 --since HEAD~1 >$LOGD/n1.log 2>&1; jq -e "(.files | map(.path)) == [\"app.js\"] and .tool == \"vitest\" and .branch_data == true" .harness/coverage/repository.json >/dev/null'
+check "istanbul: lines by statement line, branches per path" 'jq -e ".files[0] | .lines.covered == 2 and .lines.total == 3 and .branches.covered == 1 and .branches.total == 2 and .missing_lines == [5]" .harness/coverage/repository.json >/dev/null'
+check "istanbul: missing branch names the path" 'jq -e ".files[0].missing_branches[0] | .from_line == 2 and .to_line == null and .path_index == 2 and (.description | test(\"if path 2 of 2\"))" .harness/coverage/repository.json >/dev/null'
+check "istanbul: gaps include the branch with its path index" '$CV gaps F001 --all >/dev/null 2>&1; jq -e "[.gaps[] | select(.kind == \"branch\" and .path_index == 2)] | length == 1" .harness/coverage/F001-gaps.json >/dev/null'
+# detection + messages for the real runners
+new_project 2
+echo '{"name":"x","devDependencies":{"c8":"1"},"scripts":{"test":"true"}}' > package.json
+check "node: runner in package.json but not installed => 4 with a hint" '.harness/coverage.sh run >$LOGD/n2.log 2>&1; [[ $? -eq 4 ]] && grep -q "npm install" $LOGD/n2.log'
+echo '{"name":"x"}' > package.json
+check "node: no runner at all => 4 with a hint" '.harness/coverage.sh run >$LOGD/n3.log 2>&1; [[ $? -eq 4 ]] && grep -q "no node coverage runner" $LOGD/n3.log'
+# go cover profile
+new_project 2
+printf 'module example.com/x\n\ngo 1.21\n' > go.mod
+printf 'package x\n\nfunc Checkout(n int) int {\n\tif n > 0 {\n\t\treturn 200\n\t}\n\treturn 400\n}\n' > cart.go
+git add -A; git commit -qm base; printf '\n// more\n' >> cart.go; git add -A; git commit -qm "feat: F001"
+printf 'mode: set\nexample.com/x/cart.go:3.26,4.9 1 1\nexample.com/x/cart.go:4.9,6.3 1 1\nexample.com/x/cart.go:6.3,8.2 1 0\n' > $LOGD/go.cover
+jq --arg c "cp $LOGD/go.cover \$COVERAGE_JSON" '.coverage.cmd = $c | .coverage.format = "gocover"' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+check "go: statements covered/total, module prefix stripped" '$CV run --id F001 --since HEAD~1 >$LOGD/g1.log 2>&1; jq -e ".tool == \"go cover\" and .line_unit == \"statements\" and .files[0].path == \"cart.go\" and .files[0].lines.covered == 2 and .files[0].lines.total == 3" .harness/coverage/repository.json >/dev/null'
+check "go: NO branch data => null, never 0%" 'jq -e ".branch_data == false and .files[0].branches == null and .files[0].missing_branches == null and .summary.branches == null" .harness/coverage/repository.json >/dev/null && grep -q "branches n/a" $LOGD/g1.log'
+check "go: uncovered block minus covered/brace lines" 'jq -e ".files[0].missing_lines == [7]" .harness/coverage/repository.json >/dev/null'
+check "go: report says statements, not lines" 'out_has "statements 2/3" $CV show F001'
+printf 'mode: set\nexample.com/x/cart.go:3.26,4.9 1 1\nexample.com/x/cart.go:3.26,4.9 1 3\nexample.com/x/cart.go:6.3,8.2 1 0\n' > $LOGD/go.cover
+$CV run >/dev/null 2>&1
+check "go: duplicate blocks (several packages) are merged" 'jq -e ".files[0].lines.total == 2" .harness/coverage/repository.json >/dev/null'
+
 echo "coverage baseline + ratchet"
 mkcov() { local out="$1"; shift; local f="" spec p cl tl cb tb; for spec in "$@"; do IFS=: read -r p cl tl cb tb <<<"$spec"; f="$f{\"$p\":{\"missing_lines\":[],\"missing_branches\":[],\"summary\":{\"covered_lines\":$cl,\"num_statements\":$tl,\"covered_branches\":$cb,\"num_branches\":$tb}}},"; done
   jq -n --argjson fs "[${f%,}]" --arg br "${BR:-true}" '{meta:{version:"7.1",branch_coverage:($br=="true")},files:($fs|add)}' > "$out"; }

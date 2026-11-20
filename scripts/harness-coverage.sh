@@ -68,16 +68,27 @@ cmd_run() {
   local ID="" SINCE=""
   while [[ $# -gt 0 ]]; do case "$1" in --id) ID="${2:?id}"; shift 2 ;; --since) SINCE="${2:?ref}"; shift 2 ;; *) die "unknown option $1" ;; esac; done
   mkdir -p "$COV"
-  local tool custom raw="$COV/raw.json" rc=0 sha at; tool="$(cfg '.coverage.tool // ""')"; custom="$(cfg '.coverage.cmd // ""')"
+  local tool custom format runner raw="$COV/raw.json" rc=0 sha at norm="$COV/norm.json" tver=""
+  tool="$(cfg '.coverage.tool // ""')"; custom="$(cfg '.coverage.cmd // ""')"; format="$(cfg '.coverage.format // "coveragepy"')"; runner="$(cfg '.coverage.runner // ""')"
   sha="$(git rev-parse HEAD 2>/dev/null || echo none)"; at="$(now)"
   if [[ -z "$tool" && -z "$custom" ]]; then
-    if [[ -f pyproject.toml || -f setup.py || -f setup.cfg || -f pytest.ini || -f tox.ini || -n "$(ls requirements*.txt test_*.py tests/test_*.py 2>/dev/null | head -n1)" ]]; then tool=python; fi
+    if [[ -f go.mod ]]; then tool=go
+    elif [[ -f package.json ]]; then tool=node
+    elif [[ -f pyproject.toml || -f setup.py || -f setup.cfg || -f pytest.ini || -f tox.ini || -n "$(ls requirements*.txt test_*.py tests/test_*.py 2>/dev/null | head -n1)" ]]; then tool=python; fi
   fi
-  rm -f "$raw"
+  rm -f "$raw" "$norm"
+  local omit_re
+  omit_re="$(cfg '(.coverage.omit // []) | map(gsub("\\."; "\\.") | gsub("\\*"; ".*") | gsub("\\?"; ".")) | @json')"
   if [[ -n "$custom" ]]; then
     export COVERAGE_JSON="$raw" COVERAGE_FILE="$COV/.coverage"
     bash -c "$custom" > "$COV/run.log" 2>&1 < /dev/null || rc=$?
-    [[ -s "$raw" ]] || { echo "coverage: coverage.cmd produced no coverage.py-format JSON at \$COVERAGE_JSON (see $COV/run.log)" >&2; return 4; }
+    [[ -s "$raw" ]] || { echo "coverage: coverage.cmd wrote nothing to \$COVERAGE_JSON (format $format; see $COV/run.log)" >&2; return 4; }
+    case "$format" in
+      coveragepy) norm_coveragepy "$raw" > "$norm" ;;
+      istanbul) norm_istanbul "$raw" "${runner:-istanbul}" "" "$omit_re" > "$norm" ;;
+      gocover) norm_go "$raw" "" "$omit_re" > "$norm" ;;
+      *) die "coverage.format must be coveragepy, istanbul or gocover" ;;
+    esac
   elif [[ "$tool" == python ]]; then
     local py omit branch_flag="--branch"; py="$(python_bin)"
     "$py" -m coverage --version >/dev/null 2>&1 || { echo "coverage: coverage.py is not installed for $py. Install it INTO THE PROJECT env (e.g. .venv/bin/pip install coverage pytest), or set coverage.cmd" >&2; return 4; }
@@ -87,22 +98,40 @@ cmd_run() {
     "$py" -m coverage erase >/dev/null 2>&1
     "$py" -m coverage run $branch_flag --source=. --omit="$omit" -m pytest -q > "$COV/run.log" 2>&1 < /dev/null || rc=$?
     "$py" -m coverage json -q -o "$raw" >> "$COV/run.log" 2>&1 || { echo "coverage: no coverage data (did the tests run? see $COV/run.log)" >&2; return 4; }
+    norm_coveragepy "$raw" > "$norm"
+  elif [[ "$tool" == node ]]; then
+    local dir="$COV/node" bin cmd; rm -rf "$dir"; mkdir -p "$dir"
+    if [[ -z "$runner" ]]; then
+      for bin in vitest jest c8 nyc; do jq -e --arg b "$bin" '((.dependencies // {}) + (.devDependencies // {})) | has($b)' package.json >/dev/null 2>&1 && { runner="$bin"; break; }; done
+    fi
+    [[ -n "$runner" ]] || { echo "coverage: no node coverage runner found: add vitest, jest, c8 or nyc to the PROJECT (npm i -D c8), or set coverage.runner / coverage.cmd" >&2; return 4; }
+    [[ -x "node_modules/.bin/$runner" ]] || { echo "coverage: node_modules/.bin/$runner is missing: run npm install in the project (nothing is installed globally or downloaded on the fly)" >&2; return 4; }
+    case "$runner" in
+      vitest) cmd=(node_modules/.bin/vitest run --coverage.enabled --coverage.reporter=json --coverage.reportsDirectory="$dir") ;;
+      jest) cmd=(node_modules/.bin/jest --coverage --coverageReporters=json --coverageDirectory="$dir") ;;
+      c8) cmd=(node_modules/.bin/c8 --reporter=json --reports-dir="$dir" npm test --silent) ;;
+      nyc) cmd=(node_modules/.bin/nyc --reporter=json --report-dir="$dir" npm test --silent) ;;
+      *) die "coverage.runner must be vitest, jest, c8 or nyc" ;;
+    esac
+    "${cmd[@]}" > "$COV/run.log" 2>&1 < /dev/null || rc=$?
+    [[ -s "$dir/coverage-final.json" ]] || { echo "coverage: $runner wrote no coverage-final.json (does the project have tests, and the coverage provider installed? see $COV/run.log)" >&2; return 4; }
+    cp "$dir/coverage-final.json" "$raw"
+    tver="$(jq -r '.version // ""' "node_modules/$runner/package.json" 2>/dev/null)"
+    norm_istanbul "$raw" "$runner" "$tver" "$omit_re" > "$norm"
+  elif [[ "$tool" == go ]]; then
+    command -v go >/dev/null 2>&1 || { echo "coverage: the go toolchain is not on PATH" >&2; return 4; }
+    go test -covermode=set -coverprofile="$raw" ./... > "$COV/run.log" 2>&1 < /dev/null || rc=$?
+    [[ -s "$raw" ]] || { echo "coverage: go test wrote no cover profile (see $COV/run.log)" >&2; return 4; }
+    norm_go "$raw" "$(go version | awk '{print $3}' | sed 's/^go//')" "$omit_re" > "$norm"
   else
-    echo "coverage: not configured: no supported project type detected (python only for now). Set coverage.tool or coverage.cmd in $CFG" >&2; return 4
+    echo "coverage: not configured: no supported project type detected (python, node or go). Set coverage.tool or coverage.cmd in $CFG" >&2; return 4
   fi
-  local fp; fp="$(jq -cS '{tool: (.coverage.tool // ""), cmd: (.coverage.cmd // ""), branch: (if .coverage.branch == null then true else .coverage.branch end), omit: (.coverage.omit // [])}' "$CFG" 2>/dev/null | sha256)"
-  jq -n --slurpfile r "$raw" --arg sha "$sha" --arg at "$at" --argjson rc "$rc" --arg fp "$fp" "$LIB"'
-    $r[0] as $raw | ($raw.meta.branch_coverage // false) as $br
-    | { schema_version: 1, tool: "coverage.py", tool_version: ($raw.meta.version // null), scope: "repository", commit_sha: $sha, generated_at: $at,
-        config_fingerprint: $fp, branch_data: $br, tests_exit_code: $rc,
-        files: ($raw.files | to_entries | map(.key as $p | .value as $f | ($f.summary) as $s | {
-          path: $p,
-          lines: {covered: $s.covered_lines, total: $s.num_statements, percent: pct($s.covered_lines; $s.num_statements)},
-          branches: (if $br then {covered: $s.covered_branches, total: $s.num_branches, percent: pct($s.covered_branches; $s.num_branches)} else null end),
-          missing_lines: ($f.missing_lines // []),
-          missing_branches: (if $br then (($f.missing_branches // []) | map({from_line: .[0], to_line: .[1], description: arcdesc})) else null end) })) }
+  [[ -s "$norm" ]] || { echo "coverage: could not normalize the coverage data (see $COV/run.log)" >&2; return 2; }
+  local fp; fp="$(jq -cS '{tool: (.coverage.tool // ""), runner: (.coverage.runner // ""), format: (.coverage.format // ""), cmd: (.coverage.cmd // ""), branch: (if .coverage.branch == null then true else .coverage.branch end), omit: (.coverage.omit // [])}' "$CFG" 2>/dev/null | sha256)"
+  jq -n --slurpfile n "$norm" --arg sha "$sha" --arg at "$at" --argjson rc "$rc" --arg fp "$fp" "$LIB"'
+    $n[0] + {schema_version: 1, scope: "repository", commit_sha: $sha, generated_at: $at, config_fingerprint: $fp, tests_exit_code: $rc}
     | . + {summary: (.files | summ)}' > "$COV/repository.json" 2> "$COV/norm.err" \
-    || { echo "coverage: could not normalize $raw: $(head -c 300 "$COV/norm.err")" >&2; return 2; }
+    || { echo "coverage: could not normalize: $(head -c 300 "$COV/norm.err")" >&2; return 2; }
   [[ $rc -ne 0 ]] && echo "coverage: NOTE the test command exited $rc; coverage reflects what ran (see $COV/run.log)" >&2
   echo "coverage: repository $(brief "$COV/repository.json")"
 
@@ -122,15 +151,79 @@ cmd_run() {
         '. + [($repo[0].files[] | select(.path == $p)) + {diff_ranges: $r}]' <<<"$files_json")"
   done < <(git diff --name-only "$SINCE" -- 2>/dev/null)
   jq -n --slurpfile repo "$COV/repository.json" --argjson files "$files_json" --arg id "$ID" --arg since "$SINCE" "$LIB"'
-    $repo[0] | {schema_version, tool, tool_version, commit_sha, generated_at, config_fingerprint, branch_data, tests_exit_code,
+    $repo[0] | {schema_version, tool, tool_version, commit_sha, generated_at, config_fingerprint, branch_data, line_unit, tests_exit_code,
                 scope: "changed_files", feature_id: $id, since: $since, note: "changed-file coverage, not feature coverage",
                 repository_summary: .summary, files: $files}
     | . + {summary: (.files | summ)}' > "$COV/$ID.json"
   echo "coverage: $ID changed files ($(jq '.files | length' "$COV/$ID.json")) $(brief "$COV/$ID.json")"
 }
 
+# ------------------------------------------------------------------------------------------------ converters
+# each prints {tool, tool_version, branch_data, line_unit, files[]} (schema files entries, see header)
+norm_coveragepy() { # raw
+  jq --slurpfile r "$1" -n "$LIB"'
+    $r[0] as $raw | ($raw.meta.branch_coverage // false) as $br
+    | { tool: "coverage.py", tool_version: ($raw.meta.version // null), branch_data: $br, line_unit: "lines",
+        files: ($raw.files | to_entries | map(.key as $p | .value as $f | ($f.summary) as $s | {
+          path: $p,
+          lines: {covered: $s.covered_lines, total: $s.num_statements, percent: pct($s.covered_lines; $s.num_statements)},
+          branches: (if $br then {covered: $s.covered_branches, total: $s.num_branches, percent: pct($s.covered_branches; $s.num_branches)} else null end),
+          missing_lines: ($f.missing_lines // []),
+          missing_branches: (if $br then (($f.missing_branches // []) | map({from_line: .[0], to_line: .[1], description: arcdesc})) else null end) })) }'
+}
+
+DEFAULT_NODE_OMIT='["(^|/)node_modules/","(^|/)(tests?|__tests__|spec)/","\\.(test|spec)\\.[cm]?[jt]sx?$","(^|/)coverage/","^\\.harness/","(vitest|jest)\\.config\\."]'
+norm_istanbul() { # raw tool tool_version omit-regexes-json   (Istanbul coverage-final.json: vitest, jest, c8, nyc)
+  jq --slurpfile r "$1" -n --arg tool "$2" --arg tv "$3" --arg cwd "$PWD" --argjson omit "$4" --argjson dflt "$DEFAULT_NODE_OMIT" "$LIB"'
+    def rel: if startswith($cwd + "/") then .[($cwd | length) + 1:] else . end;
+    $r[0] | to_entries | map(.value as $f | (($f.path // .key) | rel) as $p
+      | ($f.statementMap | to_entries | map({line: .value.start.line, n: ($f.s[.key] // 0)}) | group_by(.line) | map({line: .[0].line, hit: (map(.n) | max)})) as $ls
+      | (($f.branchMap // {}) | to_entries | map(.key as $id | .value as $bm | ($f.b[$id] // []) as $cs
+          | [range(0; $cs | length)] | map({i: ., count: $cs[.], type: $bm.type, n: ($cs | length), from: ($bm.loc.start.line // $bm.line), to: ($bm.locations[.].start.line // null)})) | add // []) as $brs
+      | {path: $p,
+         lines: {covered: ($ls | map(select(.hit > 0)) | length), total: ($ls | length), percent: pct(($ls | map(select(.hit > 0)) | length); ($ls | length))},
+         branches: {covered: ($brs | map(select(.count > 0)) | length), total: ($brs | length), percent: pct(($brs | map(select(.count > 0)) | length); ($brs | length))},
+         missing_lines: ($ls | map(select(.hit == 0) | .line) | sort),
+         missing_branches: ($brs | map(select(.count == 0) | {from_line: .from, to_line: (if .to == .from then null else .to end), path_index: (.i + 1),
+                                  description: "\(.type) path \(.i + 1) of \(.n) at line \(.from) never taken"}))})
+    | map(select(.path as $p | ($dflt + $omit) | all(. as $re | ($p | test($re)) | not)))
+    | {tool: $tool, tool_version: (if $tv == "" then null else $tv end), branch_data: true, line_unit: "lines", files: .}'
+}
+
+norm_go() { # raw go_version omit-regexes-json   (go cover profile; Go has no branch model: branches stay null)
+  local mod="" f lines
+  [[ -f go.mod ]] && mod="$(awk '/^module /{print $2; exit}' go.mod)"
+  local files; files="$(jq -R -s -c --arg mod "$mod" --argjson omit "$3" '
+    def rel: if ($mod != "") and startswith($mod + "/") then .[($mod | length) + 1:] else . end;
+    split("\n") | map(select(test("^[^:]+:[0-9]+\\.[0-9]+,[0-9]+\\.[0-9]+ [0-9]+ [0-9]+$"))
+      | capture("^(?<f>[^:]+):(?<sl>[0-9]+)\\.(?<sc>[0-9]+),(?<el>[0-9]+)\\.(?<ec>[0-9]+) (?<n>[0-9]+) (?<c>[0-9]+)$")
+      | {f: (.f | rel), sl: (.sl | tonumber), sc: (.sc | tonumber), el: (.el | tonumber), ec: (.ec | tonumber), n: (.n | tonumber), c: (.c | tonumber)})
+    | group_by([.f, .sl, .sc, .el, .ec]) | map(.[0] + {c: (map(.c) | add)})
+    | group_by(.f) | map({path: .[0].f, blocks: .})
+    | map(select(.path as $p | $omit | all(. as $re | ($p | test($re)) | not)))' "$1")"
+  local out="[]" n i path braces
+  n="$(jq length <<<"$files")"
+  for ((i = 0; i < n; i++)); do
+    path="$(jq -r --argjson i "$i" '.[$i].path' <<<"$files")"
+    braces="[]"; [[ -f "$path" ]] && braces="$(awk '/^[ \t]*[{}][ \t]*$/ || /^[ \t]*$/ { printf "%d\n", NR }' "$path" | jq -R -s -c 'split("\n") | map(select(length > 0) | tonumber)')"
+    out="$(jq -c --argjson i "$i" --argjson br "$braces" "$LIB"'
+      .[$i] as $f
+      | ($f.blocks | map(select(.c > 0)) | map([range(.sl; .el + 1)]) | add // []) as $cov
+      | ($f.blocks | map(select(.c == 0)) | map([range(.sl; .el + 1)]) | add // []) as $unc
+      | {path: $f.path,
+         lines: {covered: ($f.blocks | map(select(.c > 0) | .n) | add // 0), total: ($f.blocks | map(.n) | add // 0),
+                 percent: pct(($f.blocks | map(select(.c > 0) | .n) | add // 0); ($f.blocks | map(.n) | add // 0))},
+         branches: null,
+         missing_lines: ($unc - $cov - $br | unique | sort),
+         missing_branches: null} as $e
+      | . as $all | $all | .[$i] = $e' <<<"$files")" || return 1
+    files="$out"
+  done
+  jq -n --argjson f "$files" --arg tv "$2" '{tool: "go cover", tool_version: (if $tv == "" then null else $tv end), branch_data: false, line_unit: "statements", files: $f}'
+}
+
 brief() { jq -r 'if (.summary.files // 0) == 0 then "no changed files with coverage data"
-  else "lines \(.summary.lines.covered)/\(.summary.lines.total)" + (if .summary.branches then ", branches \(.summary.branches.covered)/\(.summary.branches.total)" else ", branches n/a (tool gave no branch data)" end) end' "$1"; }
+  else "\(.line_unit // "lines") \(.summary.lines.covered)/\(.summary.lines.total)" + (if .summary.branches then ", branches \(.summary.branches.covered)/\(.summary.branches.total)" else ", branches n/a (tool gave no branch data)" end) end' "$1"; }
 
 # ------------------------------------------------------------------------------------------------ gaps
 GAPS_FIELDS='classification, confidence, reason, evidence, suggested_action, classified_at'
@@ -146,13 +239,13 @@ cmd_gaps() {
     (.files | map(. as $f | ($f.diff_ranges // []) as $r
       | ((($f.missing_branches // []) | map(select($all or inr(.from_line; $r) or (.to_line > 0 and inr(.to_line; $r))))) ) as $bs
       | ($bs | map(.to_line) + map(.from_line)) as $tos
-      | ( $bs | map(. as $b | {kind: "branch", file: $f.path, line: $b.from_line, to_line: $b.to_line, description: $b.description,
+      | ( $bs | map(. as $b | {kind: "branch", file: $f.path, line: $b.from_line, to_line: $b.to_line, description: $b.description, path_index: ($b.path_index // null),
                                target_unexecuted: ($b.to_line > 0 and (($f.missing_lines | index($b.to_line)) != null))}) )
         + ( $f.missing_lines | map(select(($all or inr(.; $r)) and (. as $l | ($tos | index($l)) == null))
                                    | {kind: "line", file: $f.path, line: ., to_line: null, description: "line \(.) never executed", target_unexecuted: false}) )
       | map(. + {in_diff: (inr(.line; $r) or (.to_line != null and .to_line > 0 and inr(.to_line; $r)))})
     ) | add // []) as $new
-    | ($new | map(. + {key: "\(.file):\(.line):\(.to_line // "-"):\(.kind)"})) as $n
+    | ($new | map(. + {key: "\(.file):\(.line):\(.to_line // "-"):\(.kind)\(if .path_index then ":" + (.path_index | tostring) else "" end)"})) as $n
     | ($old | map({key: .key, value: .}) | from_entries) as $o
     | (($old | map(.id | ltrimstr("G") | tonumber) | max) // 0) as $top
     | reduce $n[] as $g ({gaps: [], next: ($top + 1)};
