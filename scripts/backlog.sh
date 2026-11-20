@@ -9,7 +9,7 @@
 # Usage: backlog.sh <command> [args]
 #   propose [--by NAME] --reason TEXT [--file PATH]   payload JSON on stdin or in PATH:
 #           {"add":   [ {feature without status; id optional}, ... ],
-#            "amend": [ {"id":"F012", "description"|"steps"|"verify"|"priority"|"depends_on"|"tags"|"category": ...}, ... ],
+#            "amend": [ {"id":"F012", "description"|"steps"|"verify"|"priority"|"depends_on"|"tags"|"category"|"examples": ..., "add_examples": [ ... ]}, ... ],
 #            "drop":  [ "F013", ... ]}
 #   list [--all]               pending proposals (or all)
 #   show <PID>                 one proposal as JSON
@@ -48,9 +48,10 @@ def nextid: ([.features[].id | select(test("^F[0-9]+$")) | ltrimstr("F") | tonum
 def maxprio: ([.features[].priority | numbers] | max // 0);
 reduce ($p.amend // [])[] as $a (.;
   .features |= map(if .id != $a.id then . else
-    ($a | with_entries(select(.key | IN("description","steps","verify","priority","depends_on","tags","category"))) | del(.id)) as $chg
+    ($a | with_entries(select(.key | IN("description","steps","verify","priority","depends_on","tags","category","examples"))) | del(.id)) as $chg
     | . + $chg
-    | if (($chg | has("description")) or ($chg | has("steps")) or ($chg | has("verify"))) and (st | IN("passing","claimed","failing"))
+    | (if ($a.add_examples // null) != null then .examples = ((.examples // []) + $a.add_examples) else . end)
+    | if (($chg | has("description")) or ($chg | has("steps")) or ($chg | has("verify")) or ($chg | has("examples")) or (($a.add_examples // null) != null)) and (st | IN("passing","claimed","failing"))
       then .status = "todo" | .passes = false | del(.claimed) else . end
   end))
 | reduce ($p.drop // [])[] as $d (.; .features |= map(if .id == $d then .dropped = true else . end))

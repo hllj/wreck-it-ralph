@@ -49,6 +49,7 @@ while IFS=$'\t' read -r _ j; do
     want="$(jq -cS . <<<"$j" | sha)"
     if [[ "$(jq -r '.example_sha // ""' "$f")" != "$want" ]]; then s="altered"
     elif [[ -n "$SINCE" && "$(jq -r '.at // ""' "$f")" < "$SINCE" ]]; then s="stale"
+    elif [[ "$(jq -r '.partial // false' "$f")" == true ]]; then s="partial"
     else s="$(jq -r '.status' "$f")"; fi
   fi
   results="$(jq -c --arg e "$exid" --arg n "$name" --arg s "$s" --arg p "$f" '. + [{example: $e, name: $n, status: $s, evidence: $p}]' <<<"$results")"
@@ -67,7 +68,7 @@ fi
 total="$(jq -r .total <<<"$summary")"
 if [[ "$DECISION" == pass && "$total" -gt 0 && $complete -eq 0 ]]; then
   echo "report: NO EVIDENCE, NO PASS. Replay results for $ID are incomplete: $(jq -r '[.[] | select(.status != "pass") | "\(.example)=\(.status)"] | join(", ")' <<<"$results")" >&2
-  echo "        run: .harness/replay.sh $ID   (statuses: not_run/stale = run it now; altered = example changed since the replay; fail/error = the feature is not passing)" >&2
+  echo "        run: .harness/replay.sh $ID   (statuses: not_run/stale = run it now; altered = example changed since the replay; partial = only some steps were replayed, run it without --step; fail/error = the feature is not passing)" >&2
   exit 1
 fi
 

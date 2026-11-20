@@ -29,6 +29,7 @@
 #   verify-cmds [ID]        verify commands of one feature (or of all features)
 #   done                    exit 0 if every feature that is not dropped passes, else 1
 #   examples [ID]           print "<feature>\t<example json>" for the locked examples (one feature or all)
+#   next-example-id <ID>    the next free EXnnn for a feature
 #   examples-missing        print ids of live features that have no examples yet
 #   red <ID> [--skip WHY | --note TEXT]
 #                           coder: prove RED before implementing. Runs the feature's verify commands and
@@ -91,13 +92,16 @@ spec_json() { jq -S "[.features[] | del($SPEC_STATE_PATHS)]" "$1"; }
 
 validate_file() { # path
   jq -e "$DEFS"'
+    def okmodes: ((.assertions // {}) | type == "object" and all(.[]; IN("exact", "partial", "contains", "regex")));
+    def okio: type == "object" and has("input") and (.expect | type == "object" and length > 0) and okmodes;
+    def okfix: type == "object" and has("input") and ((.expect // {}) | type == "object") and okmodes;
     def okex:
       type == "object"
       and (.id | type == "string" and test("^EX[0-9]+$"))
       and (.name | type == "string" and length > 0)
-      and has("input")
-      and (.expect | type == "object" and length > 0)
-      and ((.assertions // {}) | type == "object" and all(.[]; IN("exact", "partial", "contains", "regex")));
+      and (if has("steps") then (.steps | type == "array" and length > 0 and all(.[]; okio)) else okio end)
+      and ((.setup // []) | type == "array" and all(.[]; okfix))
+      and ((.cleanup // []) | type == "array" and all(.[]; okfix));
     def okfeature($ids):
       (.id | type == "string")
       and (.description | type == "string")
@@ -229,6 +233,10 @@ case "$cmd" in
   examples)
     if [[ -n "${1:-}" ]]; then need_id "$1"; q '.features[] | select(.id == $id) | .id as $i | (.examples // [])[] | "\($i)\t\(tojson)"' --arg id "$1"
     else q '.features[] | live | .id as $i | (.examples // [])[] | "\($i)\t\(tojson)"'; fi
+    ;;
+  next-example-id)
+    need_id "${1:-}"
+    q '.features[] | select(.id == $id) | ([(.examples // [])[].id | select(test("^EX[0-9]+$")) | ltrimstr("EX") | tonumber] | max // 0) + 1 | "EX" + (tostring | if length < 3 then ("00" + .)[-3:] else . end)' --arg id "$1"
     ;;
   examples-missing)
     q '.features[] | live | select(((.examples // []) | length) == 0) | .id'

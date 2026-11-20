@@ -112,6 +112,44 @@ set_ex '[{"id":"EX001","name":"n","input":{"path":"/hello.txt"},"expect":{"statu
 check "server down: BLOCKED, and red cannot be proven" '$RP F001 >/dev/null 2>&1; [[ $? -eq 3 ]] && ! $FL red F001 >/dev/null 2>&1'
 check "evidence and replay wrapper are git-ignored" 'grep -qxF "evidence/" .harness/.gitignore && grep -qxF "replay.sh" .harness/.gitignore'
 
+echo "replay steps, fixtures, keep"
+new_project 2
+RP=.harness/replay.sh
+jq '.replay = {adapter:"cli", command:"bash -c"}' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+# the cli adapter runs "bash -c <script>": fixtures create/remove a file named after the namespace
+set_ex3() { jq --argjson e "$1" '.features[0].examples = $e' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json; }
+set_ex3 '[{"id":"EX001","name":"flow","steps":[{"name":"create","input":{"args":["echo one > flow-{{namespace}}.txt"]},"expect":{"exit_code":0}},{"name":"read","input":{"args":["cat flow-{{namespace}}.txt"]},"expect":{"stdout":"one"}},{"name":"append","input":{"args":["echo two >> flow-{{namespace}}.txt; cat flow-{{namespace}}.txt | tr \"\\n\" +"]},"expect":{"stdout":"one+two+"}}],"setup":[{"input":{"args":["echo seed > seed-{{namespace}}.txt"]}}],"cleanup":[{"input":{"args":["rm -f flow-{{namespace}}.txt seed-{{namespace}}.txt"]}}]}]'
+check "multi-step example validates"      '$FL validate >/dev/null'
+check "--steps numbers the steps"         '[[ "$($RP F001 --steps | cut -f1 | tr "\n" " ")" == "1 2 3 " ]]'
+check "full flow passes, fixtures cleaned" '$RP F001 >$LOGD/s1.log 2>&1; [[ $? -eq 0 ]] && ! ls flow-*.txt seed-*.txt >/dev/null 2>&1'
+check "evidence per step"                 '[[ -f .harness/evidence/F001/EX001/step-2/actual.json && -f .harness/evidence/F001/EX001/setup-1/actual.json ]]'
+check "result lists 3 steps, not partial" '[[ "$(jq -r ".steps | length" .harness/evidence/F001/EX001/result.json)" == 3 && "$(jq -r .partial .harness/evidence/F001/EX001/result.json)" == false ]]'
+$RP F001 --step 2 >$LOGD/s2.log 2>&1; rc2=$?
+check "a lone later step fails (its precondition is missing)" '[[ $rc2 -eq 1 ]] && grep -q "steps 2-2 of 3" $LOGD/s2.log'
+check "partial run is marked partial"     '[[ "$(jq -r .partial .harness/evidence/F001/EX001/result.json)" == true ]]'
+check "partial evidence is not accepted"  '! .harness/report.sh check F001 >/dev/null 2>&1'
+$RP F001 --from 1 --to 2 --keep >$LOGD/s3.log 2>&1
+check "--from/--to + --keep leave data, say so" 'ls flow-*.txt >/dev/null 2>&1 && grep -q "kept test data: namespace ralph_F001_EX001_" $LOGD/s3.log'
+rm -f flow-*.txt seed-*.txt
+set_ex3 '[{"id":"EX001","name":"fails midway","steps":[{"input":{"args":["exit 3"]},"expect":{"exit_code":0}},{"input":{"args":["touch never.txt"]},"expect":{"exit_code":0}}],"cleanup":[{"input":{"args":["touch cleaned-{{namespace}}.txt"]}}]}]'
+check "stops at the first failing step"   '$RP F001 >$LOGD/s4.log 2>&1; [[ $? -eq 1 && ! -e never.txt ]] && grep -q "step 1 exit_code" $LOGD/s4.log'
+check "cleanup still runs after a failure" 'ls cleaned-*.txt >/dev/null 2>&1'
+rm -f cleaned-*.txt
+set_ex3 '[{"id":"EX001","name":"bad setup","setup":[{"input":{"args":["exit 9"]},"expect":{"exit_code":0}}],"input":{"args":["touch ran.txt"]},"expect":{"exit_code":0}}]'
+check "failed setup aborts the example"   '$RP F001 >/dev/null 2>&1; [[ $? -ne 0 && ! -e ran.txt ]]'
+check "out-of-range step is an error"     '! $RP F001 --step 9 >/dev/null 2>&1'
+set_ex3 '[{"id":"EX001","name":"bad","steps":[{"input":{}}]}]'
+check "step without expect rejected"      '! $FL validate >/dev/null 2>&1'
+echo "proposals with add_examples"
+new_project 2
+jq '.features[0].examples=[{id:"EX001",name:"a",input:{},expect:{status:200}}]' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json; $FL lock >/dev/null; git add -A; git commit -qm ex
+check "next-example-id"                   '[[ "$($FL next-example-id F001)" == EX002 ]]'
+echo '{"amend":[{"id":"F001","add_examples":[{"id":"EX002","name":"b","input":{},"expect":{"status":404}}]}]}' > $LOGD/p.json
+check "propose add_examples"              '.harness/backlog.sh propose --by user --reason "ex" --file $LOGD/p.json >/dev/null 2>&1'
+check "approving appends and re-locks"    '.harness/backlog.sh approve all >/dev/null 2>&1 && [[ "$($FL examples F001 | wc -l | tr -d " ")" == 2 ]] && $FL verify-lock'
+echo '{"amend":[{"id":"F001","add_examples":[{"id":"EX002","name":"dup","input":{},"expect":{"status":1}}]}]}' > $LOGD/p2.json
+check "duplicate example id is refused at propose time"   '! .harness/backlog.sh propose --by user --reason "dup" --file $LOGD/p2.json >/dev/null 2>&1'
+
 echo "evidence-based verdicts"
 new_project 3
 RPT=.harness/report.sh

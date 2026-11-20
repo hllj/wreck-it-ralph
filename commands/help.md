@@ -22,6 +22,8 @@ Every agent runs in a **fresh context**, and all state lives on disk (`.harness/
 | `/wreck-it-ralph:run [--max-sessions N]` | Interactive loop: this session orchestrates fresh coder and tester subagents. |
 | `/wreck-it-ralph:run-headless [--max-sessions N] [--once]` | Unattended loop: separate `claude -p` processes in the background. |
 | `/wreck-it-ralph:status` | Features, next ready feature, open questions, pending proposals, runner state. |
+| `/wreck-it-ralph:demo <ID> [--run\|--example EX\|--step N\|--keep]` | Replay a feature's locked examples against the running app (list, all, one, or step by step) with evidence. |
+| `/wreck-it-ralph:example <ID> "<case>"` | Propose a new example for a feature's contract; it joins the locked spec once you approve. |
 | `/wreck-it-ralph:cancel` | Stop after the current session. |
 | `/wreck-it-ralph:trigger cron\|launchd\|github\|loop` | Run without you: a cron line, a launchd agent, a GitHub Actions workflow (on a schedule or when CI fails), or a `/loop`. Defaults to rollout L1. |
 | `/wreck-it-ralph:intake [github] [--label ralph]` | New labelled issues become planner proposals for your approval. Issue text is untrusted. |
