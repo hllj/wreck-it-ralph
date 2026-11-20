@@ -373,6 +373,13 @@ cmd_begin() {
     stop_decision "blocked: no remaining feature has its dependencies passing ($("$FL" list --failing | cut -f1 | tr '\n' ' ' | sed 's/ *$//'))" 9; return 0
   fi
 
+  if [[ -z "$target" && -n "$(claimed_ids)" ]]; then
+    local run_iso; run_iso="$(date -u -r "$(st_get run)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$(st_get run)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
+    if [[ -n "$run_iso" && "$(claimed_ids)" == "$("$FL" blocked-ids --since "$run_iso" | tr '\n' ' ' | sed 's/ *$//')" ]]; then
+      stop_decision "blocked: the tester could not verify $(claimed_ids) (app or environment problem, not a logic failure; see progress.md and .harness/evidence/). Fix it (.harness/init.sh must start the app), then run again" 9; return 0
+    fi
+  fi
+
   local n; n=$(( $(cat "$SESSION_FILE" 2>/dev/null || echo 0) + 1 ))
   echo "$n" > "$SESSION_FILE"
   st_set session "$n"; st_set ran $((ran + 1))
@@ -449,6 +456,7 @@ cmd_task() {
       echo "SKIP: target ${target:-none} is not tagged $tag"; return 0
     fi
   fi
+  if [[ "$agent" == "tester" ]]; then st_set_s tester_started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; fi
   if [[ "$agent" == "tester" ]]; then st_set verified_ids "$("$FL" claimed | jq -R -s -c 'split("\n")|map(select(length>0))')"; fi
   local task="Harness session $n. Progress: $("$FL" stats). Target feature: ${target:-none}. Features awaiting verification: $(claimed_ids)."
   local ctx; ctx="$(feature_context "$target")"
@@ -554,6 +562,17 @@ cmd_end() {
       "$FL" fail "$id" "marked passing without tester verification (must be claimed, then passed by the tester); reset" >/dev/null
       echo "harness: WARNING $id was marked passing without tester verification; reset to failing" >&2
       unauth="$unauth $id"
+    done
+  fi
+  if has_tester; then # no evidence, no PASS: a verified feature with examples needs complete replay results from this tester run
+    local eid
+    for eid in $(newly_passing); do
+      [[ "$(jq -r --arg id "$eid" '.features[] | select(.id == $id) | ((.examples // []) | length) > 0' "$HARNESS_DIR/feature_list.json")" == true ]] || continue
+      if ! "$PLUGIN_ROOT/scripts/harness-report.sh" check "$eid" --since "$(st_get tester_started_at)" >/dev/null 2>"$HARNESS_DIR/sessions/.evidence.err"; then
+        "$FL" fail "$eid" "marked passing without complete replay evidence ($(tr '\n' ' ' < "$HARNESS_DIR/sessions/.evidence.err" | cut -c1-200)); run .harness/replay.sh $eid and report with .harness/report.sh" >/dev/null
+        echo "harness: WARNING $eid passed without replay evidence; reset to failing" >&2
+        unauth="$unauth $eid"
+      fi
     done
   fi
   # Escalate features that keep failing so the loop can move on (skip-and-continue).

@@ -61,7 +61,7 @@ case "$PRESET" in ""|web|cli|api|library|data|docs|none) ;; *) echo "❌ --prese
 refresh_wrappers() {
   mkdir -p "$HARNESS_DIR"
   local pair name target
-  for pair in "feature-list.sh:feature-list.sh" "step.sh:harness-step.sh" "run.sh:harness-run.sh" "status.sh:harness-status.sh" "backlog.sh:backlog.sh" "doctor.sh:harness-doctor.sh" "notify.sh:notify.sh" "trigger.sh:harness-trigger.sh" "intake.sh:harness-intake.sh" "replay.sh:harness-replay.sh"; do
+  for pair in "feature-list.sh:feature-list.sh" "step.sh:harness-step.sh" "run.sh:harness-run.sh" "status.sh:harness-status.sh" "backlog.sh:backlog.sh" "doctor.sh:harness-doctor.sh" "notify.sh:notify.sh" "trigger.sh:harness-trigger.sh" "intake.sh:harness-intake.sh" "replay.sh:harness-replay.sh" "report.sh:harness-report.sh"; do
     name="${pair%%:*}"; target="${pair##*:}"
     cat > "$HARNESS_DIR/$name" <<WRAP
 #!/bin/bash

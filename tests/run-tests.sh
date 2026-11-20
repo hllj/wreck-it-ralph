@@ -112,6 +112,41 @@ set_ex '[{"id":"EX001","name":"n","input":{"path":"/hello.txt"},"expect":{"statu
 check "server down: BLOCKED, and red cannot be proven" '$RP F001 >/dev/null 2>&1; [[ $? -eq 3 ]] && ! $FL red F001 >/dev/null 2>&1'
 check "evidence and replay wrapper are git-ignored" 'grep -qxF "evidence/" .harness/.gitignore && grep -qxF "replay.sh" .harness/.gitignore'
 
+echo "evidence-based verdicts"
+new_project 3
+RPT=.harness/report.sh
+set_ex2() { jq --argjson e "$1" '.features[0].examples = $e' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json; .harness/feature-list.sh lock >/dev/null; }
+jq '.replay = {adapter:"cli", command:"echo"}' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+set_ex2 '[{"id":"EX001","name":"echo","input":{"args":["hi"]},"expect":{"stdout":"hi"}}]'
+$FL red F001 --skip "test" >/dev/null; $FL claim F001 >/dev/null
+check "pass refused without replay evidence" '! $RPT F001 pass "" >$LOGD/e1.log 2>&1 && grep -q "NO EVIDENCE, NO PASS" $LOGD/e1.log && [[ "$($FL show F001 | jq -r .status)" == claimed ]]'
+.harness/replay.sh F001 --quiet >/dev/null 2>&1
+check "pass allowed after a passing replay" '$RPT F001 pass "" >/dev/null 2>&1 && [[ "$($FL show F001 | jq -r .status)" == passing ]]'
+check "report.json has examples + sha"      '[[ "$(jq -r .status .harness/evidence/F001/report.json)" == passed && "$(jq -r .examples.passed .harness/evidence/F001/report.json)" == 1 ]]'
+check "report.md tells how to replay"       'grep -q "replay.sh F001 --example EX001" .harness/evidence/F001/report.md'
+$FL claim F001 >/dev/null 2>&1 || true
+set_ex2 '[{"id":"EX001","name":"echo","input":{"args":["hi"]},"expect":{"stdout":"CHANGED"}}]'
+check "example changed after replay = altered evidence" '! $RPT F001 pass "" >/dev/null 2>&1'
+.harness/replay.sh F001 --quiet >/dev/null 2>&1
+check "failing replay cannot pass"          '! $RPT F001 pass "" >/dev/null 2>&1'
+check "fail verdict records the note"       '$RPT F001 fail "stdout mismatch" >/dev/null 2>&1 && [[ "$($FL show F001 | jq -r .status)" == failing ]]'
+check "report.json status failed"           '[[ "$(jq -r .status .harness/evidence/F001/report.json)" == failed ]]'
+$FL red F001 --skip "again" >/dev/null; $FL claim F001 >/dev/null
+check "blocked keeps the feature claimed"   '$RPT F001 blocked "app down" >/dev/null 2>&1 && [[ "$($FL show F001 | jq -r .status)" == claimed ]]'
+check "blocked is not a failed attempt"     '[[ "$($FL failures F001)" == 0 || "$($FL failures F001)" == 1 ]] && [[ "$($FL show F001 | jq -r ".attempts[-1].event")" == blocked ]]'
+check "blocked-ids lists it"                '[[ "$($FL blocked-ids)" == F001 ]]'
+check "blocked needs a note"                '! $RPT F001 blocked "" >/dev/null 2>&1'
+check "inconclusive escalates to a human"   '$RPT F001 inconclusive "which reading?" >/dev/null 2>&1 && [[ "$($FL show F001 | jq -r .status)" == needs_human ]]'
+check "feature without examples can pass"   '$FL claim F002 >/dev/null && $RPT F002 pass "" >/dev/null 2>&1'
+check "report wrapper is git-ignored"       'grep -qxF "report.sh" .harness/.gitignore'
+
+# gate: a tester that passes a feature with examples without replay evidence is reset
+new_project 2
+jq '.replay = {adapter:"cli", command:"echo"}' .harness/config.json > .harness/c && mv .harness/c .harness/config.json
+jq '.features[0].examples = [{"id":"EX001","name":"n","input":{"args":["x"]},"expect":{"stdout":"x"}}]' .harness/feature_list.json > .harness/x && mv .harness/x .harness/feature_list.json
+.harness/feature-list.sh lock >/dev/null; .harness/step.sh trust accept >/dev/null; git add -A; git commit -qm ex
+check "tester passing without evidence is reset by the gate" '.harness/run.sh --once >$LOGD/g1.log 2>&1; grep -q "without replay evidence" $LOGD/g1.log && [[ "$(.harness/feature-list.sh show F001 | jq -r .status)" != passing ]]'
+
 echo "harness-run.sh"
 new_project 3
 check "runner completes coder->tester" '.harness/run.sh >$LOGD/h1.log 2>&1; [[ $? -eq 0 ]] && .harness/feature-list.sh done'
@@ -372,7 +407,7 @@ new_project 1
 touch requirements.txt; git add -A; git commit -qm "add requirements"
 check "begin --new-run re-detects language ignores" '$S begin --new-run >/dev/null 2>&1; grep -qxF ".venv/" .gitignore && grep -qxF ".pytest_cache/" .gitignore'
 check "begin output stays machine-readable"     '$S unlock >/dev/null; out="$($S begin --new-run 2>/dev/null)"; [[ "$(grep -c "^[A-Z_]*=" <<<"$out")" == "$(wc -l <<<"$out" | tr -d " ")" ]]'
-check "tester prompt demands probing + known-issue check" 'grep -q "Known issues" "$ROOT/agents/tester.md" && grep -q "Probe beyond the listed steps" "$ROOT/agents/tester.md" && grep -q "contradicts the feature" "$ROOT/agents/tester.md"'
+check "tester prompt demands probing + known-issue check" 'grep -q "Known issues" "$ROOT/agents/tester.md" && grep -q "exploratory testing" "$ROOT/agents/tester.md" && grep -q "contradicts the feature" "$ROOT/agents/tester.md"'
 check "coder prompt: claim only what is complete"        'grep -q "Claim only what is complete" "$ROOT/agents/coder.md"'
 
 echo "v3: living backlog (schema, dependencies, questions)"

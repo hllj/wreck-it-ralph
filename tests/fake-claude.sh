@@ -26,6 +26,7 @@ if [[ "$SYS" == *"CODER agent"* ]]; then
   if [[ "${FAKE_MODE:-}" == "workerpropose" && "$TARGET" == "F003" ]]; then
     echo '{"add":[{"description":"follow-up from F003","steps":["x"]}]}' | .harness/backlog.sh propose --by coder --reason "split F003" >/dev/null
   fi
+  [[ -n "$TARGET" && -n "$($FL examples "$TARGET" 2>/dev/null)" ]] && $FL red "$TARGET" --skip "fake coder" >/dev/null
   [[ -n "$TARGET" ]] && { echo "impl $TARGET" > "src_$TARGET.txt"; git add -A; git commit -qm "feat: $TARGET"; $FL claim "$TARGET" >/dev/null; }
   [[ "${FAKE_MODE:-}" == "selfpass" && -n "$TARGET" ]] && $FL pass "$TARGET" >/dev/null
   [[ "${FAKE_MODE:-}" == "dirty" ]] && echo junk > leftover.txt

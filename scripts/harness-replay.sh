@@ -52,6 +52,7 @@ export BASE_URL="${BASE_URL:-$(cfg '.replay.base_url // ""')}"
 export REPLAY_COMMAND="$(cfg '.replay.command // ""')"
 export REPLAY_TIMEOUT="$(cfg '.replay.timeout_seconds // 30')"
 sha="$(git rev-parse HEAD 2>/dev/null || echo none)"
+hash256() { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi | cut -d' ' -f1; }
 run_id="$(date +%s)$$"
 
 # comparison: jq program, fed {expect, assertions, actual}; prints one check object per expect key
@@ -99,9 +100,10 @@ while IFS=$'\t' read -r _ j; do
     3) status=blocked; checks='[]' ;;
     *) status=error; checks='[]' ;;
   esac
-  jq -n --arg id "$ID" --arg ex "$exid" --arg n "$name" --arg s "$status" --arg sha "$sha" --arg ad "$adapter" \
+  exsha="$(jq -cS . <<<"$j" | hash256)"
+  jq -n --arg id "$ID" --arg ex "$exid" --arg exsha "$exsha" --arg n "$name" --arg s "$status" --arg sha "$sha" --arg ad "$adapter" \
         --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson dur "$(( $(date +%s) - t0 ))" --argjson c "$checks" --arg log "$(head -c 300 "$dir/adapter.log")" \
-        '{feature: $id, example: $ex, name: $n, status: $s, adapter: $ad, commit_sha: $sha, at: $at, duration_s: $dur, checks: $c, detail: $log}' > "$dir/result.json"
+        '{feature: $id, example: $ex, name: $n, status: $s, adapter: $ad, commit_sha: $sha, example_sha: $exsha, at: $at, duration_s: $dur, checks: $c, detail: $log}' > "$dir/result.json"
   case "$status" in
     pass) passed=$((passed + 1)); [[ $QUIET -eq 1 ]] || echo "PASS  $ID/$exid  $name" ;;
     fail) any_fail=1; echo "FAIL  $ID/$exid  $name"

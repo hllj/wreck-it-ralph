@@ -15,6 +15,8 @@
 #   claim <ID>              coder: implementation done, awaiting verification
 #   pass <ID>               tester (or runner when no tester): verified end-to-end
 #   fail <ID> [note]        verification failed; records the note in the attempt history
+#   blocked <ID> <reason>   tester: could not be verified (app/environment). Stays claimed, NOT a failed attempt
+#   blocked-ids [--since T] claimed features whose latest event is `blocked` (optionally at/after ISO time T)
 #   ask <ID> <question>     escalate: the feature needs a human decision (status needs_human)
 #   requeue <ID> <note>     gate: put a feature back in the queue without counting a failure
 #                           (a parallel worker's merge conflict); it then runs alone, never in a parallel batch
@@ -171,6 +173,15 @@ case "$cmd" in
     upd "$1" 'setst("failing"; $t) | .notes = $n | logev("fail"; $n; $t)' --arg n "${2:-}"
     echo "fail $1"
     ;;
+  blocked)
+    need_id "${1:-}"; [[ -n "${2:-}" ]] || die "usage: blocked <ID> <reason>"
+    upd "$1" '(if st == "claimed" then . else setst("claimed"; $t) end) | logev("blocked"; $n; $t)' --arg n "$2"
+    echo "blocked $1"
+    ;;
+  blocked-ids)
+    since=""; [[ "${1:-}" == "--since" ]] && since="${2:-}"
+    q '.features[] | live | select(st == "claimed" and ((.attempts // [])[-1] | (.event // "") == "blocked" and (.at // "") >= $s)) | .id' --arg s "$since"
+    ;;
   ask)
     need_id "${1:-}"; [[ -n "${2:-}" ]] || die "usage: ask <ID> <question>"
     upd "$1" 'setst("needs_human"; $t) | .question = $n | logev("ask"; $n; $t)' --arg n "$2"
@@ -287,7 +298,7 @@ case "$cmd" in
     echo "restored spec from lock"
     ;;
   *)
-    sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 1
     ;;
 esac
