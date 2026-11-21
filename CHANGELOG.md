@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.5 (pre-release)
+
+- Fix found by running `/add` for real with a `haiku` main session: the orchestrator left the planner Agent call in the background, so the proposal could not be filed (a background subagent finishes in a later turn where the command's `allowed-tools` no longer apply). `/add`, `/intake` and `/init` now require `run_in_background: false`.
+- Verified for real: the planner model from `agents` reaches the subagent (a `haiku` session plus an `opus` planner, both in `modelUsage`), and filing works from a `haiku` main session after the fix (2 of 2).
+- Known limit: this depends on the model following the instruction; the filing step is not covered by an automated test.
+
 ## 0.0.4 (pre-release)
 
 - Fix found by a real `/run`: `feature-list.sh failures` counted every failed attempt since the last human answer, so a feature that failed, was fixed and later re-opened (for example by an amend) was escalated to the stronger coder model for nothing, and could be handed to a human. It now counts only fails since the last pass or answer.
