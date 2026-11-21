@@ -47,7 +47,8 @@ If your task says **BROWNFIELD**, the project already exists. Then:
    }
    ```
    Rules:
-   - Aim for 30-200 features depending on scope. Each is ONE end-to-end user-visible behaviour, small enough to implement and verify in a single session.
+   - Size the list to the project, not to a quota. Each feature is ONE end-to-end user-visible behaviour that is worth a whole coder session plus a tester session, and is small enough to implement and verify in that one session. Rough guide: a tiny tool (a few commands or endpoints) 5-12 features; a small app 12-40; a large product 40-200. If you are about to write more than about 15 features for something you could describe in a paragraph, you are splitting too fine.
+   - Do not make a feature out of every edge case. Group the happy path and its closely related edge cases (empty input, bad argument, unicode, repeat call) into the SAME feature: list them in `steps`, and put the ones that can be checked mechanically in `examples`. Separate features are for separate behaviours a user would name differently, or ones that need different code. A feature that is a single assertion on top of another feature belongs inside that feature.
    - `steps` describe how a human (or browser automation) verifies it end to end. Never "write unit tests".
    - Order by dependency: foundations (project skeleton, data model, core flow) get low `priority` numbers; polish gets high ones. Include non-functional items (error handling, responsiveness, empty states) as features too.
    - Every feature starts with `"status": "todo"` and `"passes": false`. Unique string ids (`F001`, `F002`, ...).
