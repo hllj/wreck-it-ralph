@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Single-plugin marketplace for the wreck-it-ralph long-running agent harness.",
-    "version": "0.0.3"
+    "version": "0.0.4"
   },
   "plugins": [
     {
       "name": "wreck-it-ralph",
       "source": "./",
       "description": "Loop-engineered long-running agent harness: a living feature backlog, fresh-context coder -> verify gate -> tester sessions, parallel coders, human escalation, budgets, staged rollout, plus an in-session Ralph loop.",
-      "version": "0.0.3"
+      "version": "0.0.4"
     }
   ]
 }

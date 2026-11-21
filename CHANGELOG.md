@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.4 (pre-release)
+
+- Fix found by a real `/run`: `feature-list.sh failures` counted every failed attempt since the last human answer, so a feature that failed, was fixed and later re-opened (for example by an amend) was escalated to the stronger coder model for nothing, and could be handed to a human. It now counts only fails since the last pass or answer.
+- Verified for real: `/run` end to end (5/5 features, tester fail then fix, a proposal from the tester), the `agents` config applied (model `opus` and the `escalated` flag recorded in the ledger).
+
 ## 0.0.3 (pre-release)
 
 - Fix found by running `/add` with a real `claude` session: `/add` and `/intake` now grant `Edit(.harness/tmp/**)` (a `Write(...)` rule is not honored) and file the planner's payload with `backlog.sh propose --file`; a JSON heredoc is rejected by the shell safety check. Existing projects need `/wreck-it-ralph:setup --refresh` so `.harness/tmp/` is git-ignored.
