@@ -1,7 +1,7 @@
 ---
 description: "Initialize a long-running agent harness (scaffold + initializer agent: feature list, init.sh, progress log, git)"
 argument-hint: "GOAL [--brownfield] [--preset web|cli|api|library|data|docs|none] [--max-sessions N] [--branch NAME] [--allow-dirty] [--force]"
-allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh:*)", "Bash(.harness/feature-list.sh:*)", "Agent"]
+allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh:*)", "Bash(.harness/feature-list.sh:*)", "Bash(.harness/step.sh agent-info:*)", "Agent"]
 ---
 
 # Harness Init
@@ -16,7 +16,7 @@ Do these steps in order:
    `"${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh" --for-init` plus only the setup options the user gave (verbatim).
    If it fails (already initialized, missing tools, or uncommitted changes in a git project), tell the user and stop. For uncommitted changes suggest committing/stashing, or re-running with `--branch <name>` / `--allow-dirty`.
 
-2. Launch the **initializer** as a fresh-context subagent with the Agent tool (`subagent_type: "wreck-it-ralph:initializer"`). Pass it the user's goal verbatim plus the current working directory. With `--brownfield`, start the prompt with `BROWNFIELD: this project already exists; map it and record baseline features as described in your instructions.` Wait for it to finish. Do not implement any feature yourself.
+2. Run `.harness/step.sh agent-info initializer` (if `.harness/step.sh` does not exist yet, skip this); if it prints `MODEL=<alias>` (`sonnet`, `opus`, `haiku` or `fable` only), pass it as the Agent tool's `model`. Launch the **initializer** as a fresh-context subagent with the Agent tool (`subagent_type: "wreck-it-ralph:initializer"`). Pass it the user's goal verbatim plus the current working directory. With `--brownfield`, start the prompt with `BROWNFIELD: this project already exists; map it and record baseline features as described in your instructions.` Wait for it to finish. Do not implement any feature yourself.
 
 3. Finalize (validates the feature list, checks init.sh, locks the spec, makes the first commit):
    `"${CLAUDE_PLUGIN_ROOT}/scripts/harness-setup.sh" --finalize`

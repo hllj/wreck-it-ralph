@@ -1049,11 +1049,11 @@ echo "phase 5: per-step model, stop.sh, memory"
 new_project 1
 S=.harness/step.sh
 set_trusted_cfg '.pipeline[1].model = "haiku"'
-check "spawn-info reports a per-step model"   'out_has "^MODEL=haiku$" $S spawn-info tester && ! out_has "^MODEL=" $S spawn-info coder'
+check "spawn-info reports a per-step model"   'out_has "^MODEL=haiku$" $S spawn-info tester && out_has "^MODEL=sonnet$" $S spawn-info coder'
 check "per-step model is part of trust"       'jq ".pipeline[1].model=\"opus\"" .harness/config.json > .harness/c && mv .harness/c .harness/config.json; ! $S trust status >/dev/null 2>&1'
 $S trust accept >/dev/null; git add -A; git commit -qm m >/dev/null
 FAKE_ARGS_LOG=$LOGD/m.args .harness/run.sh >/dev/null 2>&1
-check "headless passes the step model"        'grep -q -- "--model opus" $LOGD/m.args && [[ "$(grep -c -- "--model" $LOGD/m.args)" == 1 ]]'
+check "headless passes the step model"        'grep -q -- "--model opus" $LOGD/m.args && grep -q -- "--model sonnet" $LOGD/m.args'
 new_project 1
 printf '#!/bin/bash\necho stopped > stopped.txt\n' > .harness/stop.sh; chmod +x .harness/stop.sh; echo stopped.txt >> .gitignore
 check "stop.sh needs trust"                   '! .harness/step.sh trust status >/dev/null 2>&1 && out_has "echo stopped" .harness/step.sh trust show'
@@ -1072,6 +1072,42 @@ $S begin --new-run >/dev/null 2>&1; $S end >/dev/null 2>$LOGD/rot.err
 check "progress.md rotates past progress_max_kb" '[[ -f .harness/progress/archive-001.md ]] && [[ "$(wc -l < .harness/progress.md | tr -d " ")" -le 160 ]] && grep -q "Session 120" .harness/progress.md && grep -q "Session 1$" .harness/progress/archive-001.md'
 check "rotation splits at an entry heading"   'sed -n 5p .harness/progress.md | grep -q "^## Session"'
 check "rotation is committed"                 '[[ -z "$(git status --porcelain)" ]] && git ls-files .harness/progress | grep -q archive-001.md'
+
+echo "phase 6: per-role models and planner plan mode"
+new_project 1
+S=.harness/step.sh
+check "template ships per-role models"        'jq -e ".agents.planner.model == \"opus\" and .agents.coder.model == \"sonnet\" and .agents.curator.model == \"haiku\"" .harness/config.json >/dev/null'
+check "agent-info planner is read-only plan"  'out_has "^PERMISSION_MODE=plan$" $S agent-info planner && out_has "^READ_ONLY=true$" $S agent-info planner && out_has "^MODEL=opus$" $S agent-info planner'
+set_trusted_cfg '.agents.planner.permission_mode = "bypassPermissions" | .model = "haiku" | .agents.planner.model = "" | .agents.coder.model = "inherit"'
+check "planner plan mode cannot be overridden" 'out_has "^PERMISSION_MODE=plan$" $S agent-info planner && ! out_has "bypass" $S agent-info planner'
+check "role falls back to the global model"   'out_has "^MODEL=haiku$" $S agent-info planner'
+check "inherit means no model flag"           '! out_has "^MODEL=" $S agent-info coder'
+check "agents block is part of trust"         'jq ".agents.coder.model=\"opus\"" .harness/config.json > .harness/c && mv .harness/c .harness/config.json; ! $S trust status >/dev/null 2>&1'
+check "planner has read-only tools"          'grep -q "^tools: Read, Grep, Glob$" "$ROOT/agents/planner.md"'
+new_project 1
+cat > $LOGD/fake-plan.sh <<'EOP'
+#!/bin/bash
+if [[ "${1:-}" == "--help" ]]; then echo "  --output-format <format>"; exit 0; fi
+printf '%s\n' "$*" >> "$FAKE_ARGS_LOG"; cat > "$FAKE_ARGS_LOG.in"
+jq -n --arg r $'Plan:\n```json\n{"add":[{"description":"planned thing","steps":["x"]}]}\n```\n' '{type:"result",result:$r,total_cost_usd:0.1}'
+EOP
+chmod +x $LOGD/fake-plan.sh
+CLAUDE_BIN=$LOGD/fake-plan.sh FAKE_ARGS_LOG=$LOGD/p.args .harness/run.sh --plan "add a thing" >/dev/null 2>&1
+check "run.sh --plan uses plan mode and the planner model" 'grep -q -- "--permission-mode plan" $LOGD/p.args && grep -q -- "--model opus" $LOGD/p.args && grep -q -- "--allowedTools Read,Grep,Glob" $LOGD/p.args'
+check "run.sh --plan files a pending proposal" 'out_has "P001" .harness/backlog.sh list'
+check "run.sh --plan tells the planner it cannot ask" 'grep -q "cannot ask questions" $LOGD/p.args.in'
+cat > $LOGD/fake-q.sh <<'EOP'
+#!/bin/bash
+if [[ "${1:-}" == "--help" ]]; then echo "  --output-format <format>"; exit 0; fi
+cat >/dev/null
+jq -n --arg r $'QUESTIONS:\n1. Which payment provider?\n' '{type:"result",result:$r,total_cost_usd:0.1}'
+EOP
+chmod +x $LOGD/fake-q.sh
+new_project 1
+CLAUDE_BIN=$LOGD/fake-q.sh .harness/run.sh --plan "add payments" > $LOGD/q.out 2>&1; QRC=$?
+check "planner QUESTIONS are surfaced, nothing is filed" '[[ $QRC -eq 3 ]] && grep -q "Which payment provider" $LOGD/q.out && ! out_has "P001" .harness/backlog.sh list'
+check "planner prompt allows QUESTIONS only when it must" 'grep -q "^QUESTIONS:" <(sed -n "/3b/,/^4\./p" "$ROOT/agents/planner.md" | sed "s/.*\`QUESTIONS:\`/QUESTIONS:/") || grep -q "QUESTIONS" "$ROOT/agents/planner.md"'
+
 
 echo "phase 5: presets and brownfield"
 SETUP="$ROOT/scripts/harness-setup.sh"

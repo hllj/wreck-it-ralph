@@ -320,6 +320,8 @@ Interactive runs stay sequential, because subagents cannot be pinned to a worktr
 ### Per-step models and cleanup
 
 - **Models:** `"model"` on a pipeline step (for example `{ "agent": "tester", "when": "claimed", "model": "haiku" }`) overrides the global model for that step. Interactive runs accept `sonnet`, `opus`, `haiku` and `fable`; headless runs pass any model name to `claude -p`.
+- **Models per role:** the `agents` block in `.harness/config.json` sets a model per role. Defaults: initializer and planner `opus`, coder and tester `sonnet`, curator `haiku`. Precedence: pipeline step `model` > `agents.<role>.model` > top-level `model` > session default; `"inherit"` or `""` means no override. The block is part of the trust record.
+- **Planner in plan mode:** the planner always runs read-only (`tools: Read, Grep, Glob`, `--permission-mode plan` headless) and no config can change that. It returns a JSON payload; `/add` and `/intake` file it with `backlog.sh propose`, and you still approve it. Headless: `.harness/run.sh --plan "<request>"`. Plugin agents cannot set `permissionMode` in frontmatter, so the mode is enforced by the tool list and the runner.
 - **`.harness/stop.sh`:** written by the initializer when `init.sh` starts servers. The gate runs it when a loop ends, and it is covered by trust.
 
 ## Rollout, triggers and intake

@@ -9,6 +9,7 @@
 # harness-step.sh and are shared with the interactive mode.
 #
 # Usage: .harness/run.sh [--max-sessions N] [--once] [--rollout L1|L2|L3]
+#        .harness/run.sh --plan "<request>"   run the planner (always in plan mode, read-only) and file its proposal
 # Stop:  touch .harness/STOP  (or /wreck-it-ralph:cancel)
 
 set -euo pipefail
@@ -37,16 +38,57 @@ MCP="$(cfg '.mcp_config // ""')"
 ALLOWED="$(cfg '.allowed_tools // ""')"
 ONCE=0
 ROLLOUT=""
+PLAN_REQUEST=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --max-sessions) MAX_SESSIONS="${2:?number required}"; [[ "$MAX_SESSIONS" =~ ^[0-9]+$ ]] || die "--max-sessions must be a non-negative integer"; shift 2 ;;
     --once) ONCE=1; shift ;;
+    --plan) PLAN_REQUEST="${2:?request text required}"; shift 2 ;;
     --rollout) ROLLOUT="${2:?L1|L2|L3 required}"; [[ "$ROLLOUT" =~ ^L[123]$ ]] || die "--rollout must be L1, L2 or L3"; shift 2 ;;
-    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done
+
+strip_frontmatter() { awk '/^---$/{i++; next} i>=2' "$1"; }
+
+resolve_agent() {
+  local p
+  for p in "$HARNESS_DIR/agents/$1.md" "$PLUGIN_ROOT/agents/$1.md" "$PLUGIN_ROOT/templates/agents/$1.md"; do
+    [[ -f "$p" ]] && { echo "$p"; return 0; }
+  done
+  return 1
+}
+
+# ---------- --plan: the planner, headless. Plan mode (read-only): it returns a proposal payload and this
+# script files it; the planner itself never gets a tool that can write. Humans approve with /backlog.
+if [[ -n "$PLAN_REQUEST" ]]; then
+  pinfo="$("$STEP" agent-info planner)"
+  pmodel="$(sed -n 's/^MODEL=//p' <<<"$pinfo" | head -n1)"
+  pdef="$(resolve_agent planner)" || die "planner agent not found"
+  PLAN_NOTE="You cannot ask questions in this run (unattended): decide, and list every assumption in the summary. Never answer with QUESTIONS."
+  pctx="$("$PLUGIN_ROOT/scripts/feature-list.sh" stats 2>/dev/null || true)
+$("$PLUGIN_ROOT/scripts/feature-list.sh" list 2>/dev/null | head -60 || true)"
+  pargs=(-p --permission-mode plan --output-format json --allowedTools "Read,Grep,Glob")
+  pargs+=(--append-system-prompt "$(strip_frontmatter "$pdef")")
+  [[ -n "$pmodel" ]] && pargs+=(--model "$pmodel")
+  pjson="$(mktemp)"; ppayload="$(mktemp)"
+  printf 'Current backlog (read-only context):\n%s\n\n%s\n\nRequest:\n%s\n' "$pctx" "$PLAN_NOTE" "$PLAN_REQUEST" \
+    | "$CLAUDE_BIN" "${pargs[@]}" > "$pjson" || die "planner run failed"
+  jq -r '.result // ""' "$pjson" | awk '/^```json[[:space:]]*$/{f=1;next} /^```[[:space:]]*$/{if(f){exit}} f' > "$ppayload"
+  if ! jq -e 'type == "object"' "$ppayload" >/dev/null 2>&1 && jq -r '.result // ""' "$pjson" | grep -q '^QUESTIONS:'; then
+    jq -r '.result // ""' "$pjson" | sed -n '/^QUESTIONS:/,$p'
+    rm -f "$pjson" "$ppayload"
+    echo "The planner needs answers. Add them to the request and run --plan again." >&2
+    exit 3
+  fi
+  jq -e 'type == "object"' "$ppayload" >/dev/null 2>&1 || { jq -r '.result // ""' "$pjson" | tail -n 20; die "the planner returned no valid JSON payload"; }
+  HARNESS_DIR="$HARNESS_DIR" "$PLUGIN_ROOT/scripts/backlog.sh" propose --by planner --reason "$(printf '%s' "$PLAN_REQUEST" | head -n1 | cut -c1-120)" --file "$ppayload"
+  rm -f "$pjson" "$ppayload"
+  echo "Review with: /wreck-it-ralph:backlog (nothing changes until a human approves)"
+  exit 0
+fi
 
 # Single runner per project.
 PIDFILE="$HARNESS_DIR/runner.pid"
@@ -68,15 +110,6 @@ on_exit() {
 trap on_exit EXIT
 stop_run() { REASON="$1"; exit "$2"; } # reason, exit code
 
-strip_frontmatter() { awk '/^---$/{i++; next} i>=2' "$1"; }
-
-resolve_agent() {
-  local p
-  for p in "$HARNESS_DIR/agents/$1.md" "$PLUGIN_ROOT/agents/$1.md" "$PLUGIN_ROOT/templates/agents/$1.md"; do
-    [[ -f "$p" ]] && { echo "$p"; return 0; }
-  done
-  return 1
-}
 
 # Probe the CLI once: a per-call spend cap needs --max-budget-usd.
 SUPPORTS_BUDGET=0
@@ -100,6 +133,7 @@ run_agent() { # name task logfile
   info="$("$STEP" spawn-info "$name" 2>"$logfile")" || { log "   step '$name': $(cat "$logfile")"; return 127; }
   type="$(sed -n 's/^TYPE=//p' <<<"$info" | head -n1)"; optional="$(sed -n 's/^OPTIONAL=//p' <<<"$info" | head -n1)"
   local model; model="$(sed -n '1,/^---PROMPT---$/s/^MODEL=//p' <<<"$info" | head -n1)"; model="${model:-$MODEL}"
+  local perm; perm="$(sed -n '1,/^---PROMPT---$/s/^PERMISSION_MODE=//p' <<<"$info" | head -n1)"; perm="${perm:-$PERM}"
   case "$type" in
     gate) "$STEP" run-step "$name" > "$logfile" 2>&1; return $? ;;
     missing) echo "optional step '$name': agent not found" > "$logfile"; return 75 ;;
@@ -112,7 +146,7 @@ run_agent() { # name task logfile
 
 $task" ;;
   esac
-  local args=(-p --permission-mode "$PERM" --output-format json)
+  local args=(-p --permission-mode "$perm" --output-format json)
   [[ -n "$sys" ]] && args+=(--append-system-prompt "$sys")
   [[ -n "$model" ]]   && args+=(--model "$model")
   [[ -n "$ALLOWED" ]] && args+=(--allowedTools "$ALLOWED")

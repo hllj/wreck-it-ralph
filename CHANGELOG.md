@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `agents` config block: model (and permission mode) per role, with defaults opus/sonnet/haiku; `step.sh agent-info <role>`; `spawn-info` and the headless runner honor them.
+- The planner always runs in plan mode (read-only tools, returns a payload that the caller files); new `run.sh --plan "<request>"`.
+
 ## 0.0.1 (pre-release)
 
 The version number was reset to 0.0.1. Everything before this was numbered 3.0.0 to 3.4.1 internally and was never released under that scheme; `docs/ROADMAP-v3.md` and `REVIEW.md` keep those numbers as history. The `"version": 3` in `.harness/config.json` is the config schema version and is unchanged.

@@ -11,6 +11,7 @@
 #         DECISION=continue|done|stop  SESSION=n  TARGET=<feature id>  STATS=...  REASON=...  CODE=<exit code>
 #   plan                         list pipeline steps: name<TAB>blocking<TAB>every<TAB>when
 #   task <name>                  print the task message for the step, or "SKIP: <why>"
+#   agent-info <role>            MODEL=, PERMISSION_MODE=, READ_ONLY= for a role launched outside the pipeline (planner, initializer)
 #   spawn-info <name>            TYPE=<subagent type> | general-purpose | gate, OPTIONAL=true|false;
 #                                for general-purpose the prompt follows "---PROMPT---"
 #   run-step <name>              run a `cmd:` pipeline step in the gate (exit code = result)
@@ -87,6 +88,32 @@ safe_commit() { # message; never swallows a failure
 # "skill:name" | "command:/plugin:cmd args" | "cmd:shell", "optional": true}. A step's name is its handle.
 STEPNAME='def stepname: .name // .agent // ((.use // "step") | sub("^[a-z]+:\\s*/?"; "") | gsub("[^A-Za-z0-9_-]+"; "-") | .[0:40]);'
 step_entry() { jq -c --arg a "$1" "$STEPNAME"' [.pipeline[]? | select(stepname == $a)] | .[0] // {}' "$CFG"; }
+# Per-role settings (config "agents": {"<role>": {"model": "...", "permission_mode": "..."}}).
+# Precedence for the model: pipeline step "model" > agents.<role>.model > top-level "model" > session default.
+# The planner ALWAYS runs in plan mode (read-only, it returns a proposal payload and the orchestrator files it):
+# no config value can weaken that.
+agent_model() { # role [step-entry-json]
+  local role="$1" entry="${2-}" m; [[ -n "$entry" ]] || entry="{}"
+  m="$(jq -r '.model // ""' <<<"$entry")"
+  [[ -z "$m" ]] && m="$(jq -r --arg r "$role" '.agents[$r].model // ""' "$CFG")"
+  [[ -z "$m" ]] && m="$(jq -r '.model // ""' "$CFG")"
+  [[ "$m" == inherit ]] && m=""
+  echo "$m"
+}
+agent_perm() { # role [step-entry-json]
+  local role="$1" entry="${2-}" p; [[ -n "$entry" ]] || entry="{}"
+  [[ "$role" == planner ]] && { echo plan; return 0; }
+  p="$(jq -r '.permission_mode // ""' <<<"$entry")"
+  [[ -z "$p" ]] && p="$(jq -r --arg r "$role" '.agents[$r].permission_mode // ""' "$CFG")"
+  echo "$p"
+}
+cmd_agent_info() { # <role>: what a command needs to launch that role as a subagent
+  local role="${1:?role required (initializer|planner|coder|tester|curator)}" m p
+  m="$(agent_model "$role")"; p="$(agent_perm "$role")"
+  echo "ROLE=$role"; [[ -n "$m" ]] && echo "MODEL=$m"; [[ -n "$p" ]] && echo "PERMISSION_MODE=$p"
+  [[ "$role" == planner ]] && echo "READ_ONLY=true"
+  return 0
+}
 is_extension() { case "$1" in agent:*:*|skill:*|command:*) return 0 ;; esac; return 1; } # another plugin's agent / a skill
 has_tester() { jq -e 'any(.pipeline[]?; .agent == "tester" or .use == "agent:tester")' "$CFG" >/dev/null; }
 hooks_allowed() { is_trusted; }
@@ -97,7 +124,7 @@ TRUST_FILE="$HARNESS_DIR/.trusted"
 mcp_path() { cfg '.mcp_config // ""'; }
 trust_material() { # everything that can run commands or steer agents with elevated rights
   jq -S '{permission_mode, allowed_tools, final_verify_command, verify_static, claude_bin, model, mcp_config,
-          uses: [.pipeline[]? | .use // empty], models: [.pipeline[]? | .model // empty], hooks: (.hooks // {}),
+          uses: [.pipeline[]? | .use // empty], models: [.pipeline[]? | .model // empty], agents: (.agents // {}), hooks: (.hooks // {}),
           rollout_push, rollout_pr, parallel} + (if .replay then {replay} else {} end) + (if .coverage then {coverage: {tool: .coverage.tool, cmd: .coverage.cmd}} else {} end)' "$CFG"
   local m; m="$(mcp_path)"; if [[ -n "$m" && -f "$m" ]]; then echo "## mcp: $m"; cat "$m"; fi
   local f; for f in $(ls "$HARNESS_DIR"/agents/*.md 2>/dev/null | sort); do echo "## agent: $f"; cat "$f"; done
@@ -138,6 +165,8 @@ cmd_trust() {
       local v; v="$("$FL" verify-cmds 2>/dev/null || true)"
       if [[ -n "$v" ]]; then echo; echo "Feature verify commands (feature_list.json):"; printf '%s\n' "$v" | sort -u | sed 's/^/  $ /'; fi
       if [[ -f "$HARNESS_DIR/stop.sh" ]]; then echo; echo "Cleanup script run by the gate at the end of each run ($HARNESS_DIR/stop.sh):"; sed 's/^/  | /' "$HARNESS_DIR/stop.sh"; fi
+      local am; am="$(jq -r '(.agents // {}) | to_entries[] | select(.value.model or .value.permission_mode) | "  \(.key): model=\(.value.model // "-") permission_mode=\(if .key == "planner" then "plan (always)" else (.value.permission_mode // "-") end)"' "$CFG")"
+      if [[ -n "$am" ]]; then echo; echo "Per-role agents:"; echo "$am"; fi
       local pm; pm="$(jq -r '.pipeline[]? | select(.model) | "  \(.name // .agent): \(.model)"' "$CFG")"
       if [[ -n "$pm" ]]; then echo; echo "Per-step models:"; echo "$pm"; fi
       local m; m="$(mcp_path)"
@@ -487,8 +516,11 @@ cmd_spawn_info() {
   entry="$(step_entry "$name")"
   use="$(jq -r '.use // ""' <<<"$entry")"; optional="$(jq -r '.optional // false' <<<"$entry")"
   [[ -z "$use" ]] && use="agent:$name"
-  local model; model="$(jq -r '.model // ""' <<<"$entry")"
+  local role="$name" model perm
+  case "$use" in agent:*:*) ;; agent:*) role="${use#agent:}" ;; esac
+  model="$(agent_model "$role" "$entry")"; perm="$(agent_perm "$role" "$entry")"
   [[ -n "$model" ]] && echo "MODEL=$model"
+  [[ -n "$perm" ]] && echo "PERMISSION_MODE=$perm"
   case "$use" in
     agent:*:*) # another plugin's agent, e.g. agent:pr-review-toolkit:code-reviewer
       echo "TYPE=${use#agent:}"; echo "OPTIONAL=$optional" ;;
@@ -851,6 +883,7 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
   begin)       cmd_begin "$@" ;;
   plan)        cmd_plan ;;
+  agent-info)  cmd_agent_info "$@" ;;
   task)        cmd_task "$@" ;;
   spawn-info)  cmd_spawn_info "$@" ;;
   end)         cmd_end ;;
