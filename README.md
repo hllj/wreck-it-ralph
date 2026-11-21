@@ -1,6 +1,6 @@
 # wreck-it-ralph
 
-> **Status: 0.0.1, a pre-release.** The harness has been exercised by its own test suite (`bash tests/run-tests.sh`) and by one small end-to-end run (a Python API, two sessions, three features). Expect rough edges, and read [Known limits](#known-limits) before relying on it. Earlier internal numbering (3.x) was reset to 0.0.1; see `CHANGELOG.md`.
+> **Status: 0.0.2, a pre-release.** The harness has been exercised by its own test suite (`bash tests/run-tests.sh`) and by one small end-to-end run (a Python API, two sessions, three features). Expect rough edges, and read [Known limits](#known-limits) before relying on it. Earlier internal numbering (3.x) was reset to 0.0.1; see `CHANGELOG.md`.
 
 A Claude Code plugin for building software **gradually, over many sessions**, by combining three ideas:
 

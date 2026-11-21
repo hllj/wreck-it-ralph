@@ -1,6 +1,6 @@
 {
   "name": "wreck-it-ralph",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Loop-engineered long-running agent harness: a living feature backlog, fresh-context coder -> verify gate -> tester sessions with locked examples, replay evidence and coverage gaps, parallel coders in git worktrees, distilled learnings, human escalation, run budgets, staged rollout, scheduled/CI triggers and issue intake. It composes with other plugins, supports presets for web/api/cli/library/data/docs plus brownfield projects, and includes an in-session Ralph loop with a real verify command.",
   "author": {
     "name": "wreck-it-ralph contributors"
