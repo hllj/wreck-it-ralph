@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.3 (pre-release)
+
+- Fix found by running `/add` with a real `claude` session: `/add` and `/intake` now grant `Edit(.harness/tmp/**)` (a `Write(...)` rule is not honored) and file the planner's payload with `backlog.sh propose --file`; a JSON heredoc is rejected by the shell safety check. Existing projects need `/wreck-it-ralph:setup --refresh` so `.harness/tmp/` is git-ignored.
+- Verified for real: `run.sh --plan` and `/add` (proposal filed, human approval asked) and the planner's `QUESTIONS` path.
+
 ## 0.0.2 (pre-release)
 
 - `agents` config block: model (and permission mode) per role, with defaults opus/sonnet/haiku; `step.sh agent-info <role>`; `spawn-info` and the headless runner honor them.
