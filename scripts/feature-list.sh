@@ -25,7 +25,7 @@
 #   claimed                 print ids of claimed (unverified) features
 #   ids [--status S]        print ids (optionally only those with status S)
 #   count <status>          number of features with that status
-#   failures <ID>           failed attempts since the last human answer
+#   failures <ID>           failed attempts since the last human answer or the last pass
 #   verify-cmds [ID]        verify commands of one feature (or of all features)
 #   done                    exit 0 if every feature that is not dropped passes, else 1
 #   examples [ID]           print "<feature>\t<example json>" for the locked examples (one feature or all)
@@ -220,7 +220,7 @@ case "$cmd" in
   failures)
     need_id "${1:-}"
     q '.features[] | select(.id == $id) | (.attempts // []) as $a
-       | ([$a | to_entries[] | select(.value.event == "answer") | .key] | max // -1) as $last
+       | ([$a | to_entries[] | select(.value.event == "answer" or .value.event == "pass") | .key] | max // -1) as $last
        | [$a | to_entries[] | select(.key > $last and .value.event == "fail")] | length' --arg id "$1"
     ;;
   verify-cmds)

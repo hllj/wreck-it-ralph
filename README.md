@@ -169,7 +169,7 @@ begin gate ─▶ coder (fresh) ─▶ verify gate ─▶ tester (fresh) ─▶ 
 ### Escalation instead of spinning
 
 - **Asking a human.** A coder or tester that needs a decision runs `feature-list.sh ask <ID> "<question>"`. The feature waits in `needs_human` and **the loop keeps going with the other features**.
-- **Auto-escalation.** After `escalate_after_failures` consecutive failures (default 3, `0` turns it off), the gate escalates the feature itself, with the last failure note as the question.
+- **Auto-escalation.** After `escalate_after_failures` consecutive failures, counted since the last pass or human answer, (default 3, `0` turns it off), the gate escalates the feature itself, with the last failure note as the question.
 - **Answering.** Answer with `/wreck-it-ralph:backlog answer F012 "use UTF-8"`. The next coder gets the answer, and the previous failure note, in its task message.
 - **Retries.** Every retry of a failed feature is told why the last attempt failed and not to repeat it.
 

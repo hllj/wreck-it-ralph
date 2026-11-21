@@ -661,6 +661,10 @@ $FL answer F002 "CSV" >/dev/null
 check "answer makes the feature ready again"  '[[ "$(st_of F002)" == TODO && "$(jq -r ".features[1].answer" .harness/feature_list.json)" == CSV ]] && ! out_has "need a human" $FL stats'
 $FL answer F003 "try the streaming API" >/dev/null
 check "failures reset after an answer"        '[[ "$($FL failures F003)" == 0 ]]'
+$FL fail F003 again >/dev/null; $FL claim F003 >/dev/null; $FL pass F003 >/dev/null
+check "failures reset after a pass"           '[[ "$($FL failures F003)" == 0 ]]'
+$FL fail F003 regressed >/dev/null
+check "a failure after a pass counts again"   '[[ "$($FL failures F003)" == 1 ]]'
 check "status changes keep the spec lock"     '$FL verify-lock'
 
 echo "v3: backlog proposals"
