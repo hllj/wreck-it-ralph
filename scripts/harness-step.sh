@@ -25,6 +25,7 @@
 #   ledger add <agent> [--cost USD] [--tokens N] [--input-tokens N] [--output-tokens N] [--ms N] [--turns N] [--mode M]
 #                                record what an agent run cost (headless: parsed from claude's JSON output;
 #                                interactive: the orchestrator passes the usage the Agent tool reported)
+#   ledger report [--all]        cost, runs, tokens and escalations per role and model (current run, or all runs)
 #   ledger total                 COST=, TOKENS=, MINUTES=, RUNS= for the current run
 #   budget                       REMAINING_USD= (empty when no cost cap) for the current run
 #   verify                       run gate-owned verify commands for claimed features (also run
@@ -92,14 +93,29 @@ step_entry() { jq -c --arg a "$1" "$STEPNAME"' [.pipeline[]? | select(stepname =
 # Precedence for the model: pipeline step "model" > agents.<role>.model > top-level "model" > session default.
 # The planner ALWAYS runs in plan mode (read-only, it returns a proposal payload and the orchestrator files it):
 # no config value can weaken that.
+# Escalation (coder only): once the target feature has >= agents.coder.escalate_after failed attempts, the
+# coder runs on agents.coder.escalate_model instead of its normal model, before the loop gives up and asks
+# a human. A "model" set on the pipeline step pins it and disables escalation.
+ESCALATED=""
 agent_model() { # role [step-entry-json]
   local role="$1" entry="${2-}" m; [[ -n "$entry" ]] || entry="{}"
+  ESCALATED=""
   m="$(jq -r '.model // ""' <<<"$entry")"
+  if [[ -z "$m" && "$role" == coder ]]; then
+    local em ea tgt fails
+    em="$(jq -r '.agents.coder.escalate_model // ""' "$CFG")"; ea="$(jq -r '.agents.coder.escalate_after // 1' "$CFG")"
+    tgt="$(st_get target 2>/dev/null || true)"
+    if [[ -n "$em" && "$em" != inherit && -n "$tgt" && "$tgt" != none && "$ea" =~ ^[0-9]+$ && "$ea" -gt 0 ]]; then
+      fails="$("$FL" failures "$tgt" 2>/dev/null || echo 0)"
+      if [[ "$fails" =~ ^[0-9]+$ && "$fails" -ge "$ea" ]]; then ESCALATED="true"; echo "$em"; return 0; fi
+    fi
+  fi
   [[ -z "$m" ]] && m="$(jq -r --arg r "$role" '.agents[$r].model // ""' "$CFG")"
   [[ -z "$m" ]] && m="$(jq -r '.model // ""' "$CFG")"
   [[ "$m" == inherit ]] && m=""
   echo "$m"
 }
+esc_flag() { agent_model "$1" "${2-}" >/dev/null; echo "$ESCALATED"; }  # NB: subshell-free, sets ESCALATED in this call only
 agent_perm() { # role [step-entry-json]
   local role="$1" entry="${2-}" p; [[ -n "$entry" ]] || entry="{}"
   [[ "$role" == planner ]] && { echo plan; return 0; }
@@ -254,21 +270,21 @@ cmd_ledger() {
   local sub="${1:-}"; shift || true
   case "$sub" in
     add)
-      local agent="${1:?agent required}" cost="" tokens="" itok="" otok="" ms="" turns="" mode="interactive"; shift
+      local agent="${1:?agent required}" cost="" tokens="" itok="" otok="" ms="" turns="" mode="interactive" model="" esc=""; shift
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --cost) cost="${2:-}"; shift 2 ;; --tokens) tokens="${2:-}"; shift 2 ;;
           --input-tokens) itok="${2:-}"; shift 2 ;; --output-tokens) otok="${2:-}"; shift 2 ;;
-          --ms) ms="${2:-}"; shift 2 ;; --turns) turns="${2:-}"; shift 2 ;; --mode) mode="${2:-}"; shift 2 ;;
+          --ms) ms="${2:-}"; shift 2 ;; --turns) turns="${2:-}"; shift 2 ;; --mode) mode="${2:-}"; shift 2 ;; --model) model="${2:-}"; shift 2 ;; --escalated) esc="true"; shift ;;
           *) die "unknown ledger option: $1" ;;
         esac
       done
       local v; for v in "$cost" "$tokens" "$itok" "$otok" "$ms" "$turns"; do [[ -z "$v" ]] || num_ok "$v" || die "ledger values must be numbers, got: $v"; done
       local run session; run="$(st_get run)"; session="$(st_get session)"
       jq -cn --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson run "${run:-0}" --argjson session "${session:-0}" \
-        --arg agent "$agent" --arg mode "$mode" --arg cost "$cost" --arg tokens "$tokens" --arg itok "$itok" --arg otok "$otok" --arg ms "$ms" --arg turns "$turns" '
+        --arg agent "$agent" --arg mode "$mode" --arg model "$model" --arg esc "$esc" --arg cost "$cost" --arg tokens "$tokens" --arg itok "$itok" --arg otok "$otok" --arg ms "$ms" --arg turns "$turns" '
         def n($x): if $x == "" then null else ($x | tonumber) end;
-        {at: $at, run: $run, session: $session, agent: $agent, mode: $mode, cost_usd: n($cost), tokens: n($tokens),
+        {at: $at, run: $run, session: $session, agent: $agent, mode: $mode, model: (if $model == "" then null else $model end), escalated: (if $esc == "true" then true else null end), cost_usd: n($cost), tokens: n($tokens),
          input_tokens: n($itok), output_tokens: n($otok), duration_ms: n($ms), turns: n($turns)} | with_entries(select(.value != null))' >> "$LEDGER"
       echo "recorded"
       ;;
@@ -276,7 +292,21 @@ cmd_ledger() {
       local t; read -r -a t <<<"$(ledger_totals)"
       emit COST "${t[0]}"; emit TOKENS "${t[1]}"; emit MINUTES "$(run_minutes)"; emit RUNS "${t[2]}"
       ;;
-    *) die "usage: ledger add|total" ;;
+    report) # cost per role and model: ledger report [--all]  (default: the current run)
+      [[ -f "$LEDGER" ]] || { echo "no ledger yet"; return 0; }
+      local run=""; [[ "${1:-}" == "--all" ]] || run="$(st_get run)"
+      jq -rs --arg run "$run" '
+        [.[] | select($run == "" or (.run | tostring) == $run)] as $e
+        | if ($e | length) == 0 then "no runs recorded"
+          else (["ROLE","MODEL","RUNS","ESCALATED","COST_USD","TOKENS","MINUTES"] | @tsv),
+            ($e | group_by([.agent, (.model // "-")])[] | . as $g
+              | [$g[0].agent, ($g[0].model // "-"), ($g | length), ([$g[] | select(.escalated)] | length),
+                 ([$g[].cost_usd // 0] | add | . * 100 | round / 100),
+                 ([$g[] | (.input_tokens // 0) + (.output_tokens // 0) + (.tokens // 0)] | add),
+                 ([$g[].duration_ms // 0] | add / 60000 | . * 10 | round / 10)] | @tsv),
+            (["TOTAL","-","\($e | length)","\([$e[] | select(.escalated)] | length)","\([$e[].cost_usd // 0] | add | . * 100 | round / 100)","-","-"] | @tsv)
+          end' "$LEDGER" | column -t -s "$(printf '\t')" ;;
+    *) die "usage: ledger add|total|report [--all]" ;;
   esac
 }
 
@@ -520,6 +550,7 @@ cmd_spawn_info() {
   case "$use" in agent:*:*) ;; agent:*) role="${use#agent:}" ;; esac
   model="$(agent_model "$role" "$entry")"; perm="$(agent_perm "$role" "$entry")"
   [[ -n "$model" ]] && echo "MODEL=$model"
+  [[ -n "$(esc_flag "$role" "$entry")" ]] && echo "ESCALATED=true"
   [[ -n "$perm" ]] && echo "PERMISSION_MODE=$perm"
   case "$use" in
     agent:*:*) # another plugin's agent, e.g. agent:pr-review-toolkit:code-reviewer

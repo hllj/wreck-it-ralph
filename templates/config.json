@@ -10,8 +10,8 @@
   "agents": {
     "initializer": {"model": "opus"},
     "planner":     {"model": "opus"},
-    "coder":       {"model": "sonnet"},
-    "tester":      {"model": "sonnet"},
+    "coder":       {"model": "sonnet", "escalate_model": "opus", "escalate_after": 1},
+    "tester":      {"model": "opus"},
     "curator":     {"model": "haiku"}
   },
   "pipeline": [

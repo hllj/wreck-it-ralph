@@ -1109,6 +1109,24 @@ check "planner QUESTIONS are surfaced, nothing is filed" '[[ $QRC -eq 3 ]] && gr
 check "planner prompt allows QUESTIONS only when it must" 'grep -q "^QUESTIONS:" <(sed -n "/3b/,/^4\./p" "$ROOT/agents/planner.md" | sed "s/.*\`QUESTIONS:\`/QUESTIONS:/") || grep -q "QUESTIONS" "$ROOT/agents/planner.md"'
 
 
+echo "phase 6b: tester model, coder escalation, ledger report"
+new_project 1
+S=.harness/step.sh
+check "tester defaults to opus"               'out_has "^MODEL=opus$" $S agent-info tester'
+check "coder starts on its normal model"      'out_has "^MODEL=sonnet$" $S spawn-info coder && ! out_has "^ESCALATED=" $S spawn-info coder'
+FID="$(.harness/feature-list.sh next | cut -f1)"
+echo "{\"target\": \"$FID\", \"run\": 1}" > .harness/.step_state.json
+.harness/feature-list.sh fail "$FID" "first attempt broke" >/dev/null 2>&1 || .harness/feature-list.sh claim "$FID" >/dev/null 2>&1
+.harness/feature-list.sh fail "$FID" "first attempt broke" >/dev/null 2>&1
+check "coder escalates after a failed attempt" 'out_has "^MODEL=opus$" $S spawn-info coder && out_has "^ESCALATED=true$" $S spawn-info coder'
+set_trusted_cfg '.pipeline[0].model = "haiku"'
+check "a step model pins and disables escalation" 'out_has "^MODEL=haiku$" $S spawn-info coder && ! out_has "^ESCALATED=" $S spawn-info coder'
+set_trusted_cfg 'del(.pipeline[0].model) | .agents.coder.escalate_model = ""'
+check "no escalate_model means no escalation"  'out_has "^MODEL=sonnet$" $S spawn-info coder'
+$S ledger add coder --cost 0.5 --model opus --escalated >/dev/null; $S ledger add tester --cost 0.25 --model opus >/dev/null
+check "ledger report groups by role and model" 'out_has "coder *opus *1 *1 *0.5" $S ledger report --all && out_has "TOTAL *- *2 *1 *0.75" $S ledger report --all'
+check "ledger records model and escalated"    'jq -es "any(.[]; .agent == \"coder\" and .model == \"opus\" and .escalated == true)" .harness/ledger.jsonl >/dev/null'
+
 echo "phase 5: presets and brownfield"
 SETUP="$ROOT/scripts/harness-setup.sh"
 P="$(mktemp -d)"; cd "$P"; git init -q; $SETUP --preset library >/dev/null 2>&1

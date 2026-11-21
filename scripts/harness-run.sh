@@ -115,13 +115,14 @@ stop_run() { REASON="$1"; exit "$2"; } # reason, exit code
 SUPPORTS_BUDGET=0
 "$CLAUDE_BIN" --help </dev/null 2>/dev/null | grep -q -- '--max-budget-usd' && SUPPORTS_BUDGET=1
 
-record_usage() { # name jsonfile -> ledger line (tolerant: unknown/old output just records nothing)
-  local name="$1" json="$2" fields
+record_usage() { # name jsonfile [model] [escalated] -> ledger line (tolerant: unknown/old output just records nothing)
+  local name="$1" json="$2" fmodel="${3:-}" fesc="${4:-}" fields
   fields="$(jq -r 'select(type == "object") | [(.total_cost_usd // .cost_usd // ""), (.usage.input_tokens // ""),
       ((.usage.output_tokens // 0) + (.usage.cache_creation_input_tokens // 0) | tostring), (.duration_ms // ""), (.num_turns // "")] | @tsv' "$json" 2>/dev/null | head -n1)" || return 0
   [[ -z "$fields" ]] && return 0
   local cost itok otok ms turns; IFS=$'\t' read -r cost itok otok ms turns <<<"$fields"
   local a=(ledger add "$name" --mode headless)
+  [[ -n "$fmodel" ]] && a+=(--model "$fmodel"); [[ "$fesc" == true ]] && a+=(--escalated)
   [[ -n "$cost" ]] && a+=(--cost "$cost"); [[ -n "$itok" ]] && a+=(--input-tokens "$itok")
   [[ -n "$otok" ]] && a+=(--output-tokens "$otok"); [[ -n "$ms" ]] && a+=(--ms "$ms"); [[ -n "$turns" ]] && a+=(--turns "$turns")
   "$STEP" "${a[@]}" >/dev/null 2>&1 || true
@@ -160,7 +161,7 @@ $task" ;;
   # Human-readable log: the agent's final text, then stderr. Raw JSON (cost, usage) stays next to it.
   if jq -e 'type == "object" and has("result")' "$json" >/dev/null 2>&1; then
     { jq -r '.result // ""' "$json"; echo; cat "$logfile"; } > "$logfile.tmp" && mv "$logfile.tmp" "$logfile"
-    [[ -n "${NO_RECORD:-}" ]] || record_usage "$name" "$json"
+    [[ -n "${NO_RECORD:-}" ]] || record_usage "$name" "$json" "$model" "$(sed -n '1,/^---PROMPT---$/s/^ESCALATED=//p' <<<"$info" | head -n1)"
   else
     { cat "$json"; cat "$logfile"; } > "$logfile.tmp" && mv "$logfile.tmp" "$logfile"
   fi
