@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.7 (pre-release)
+
+- Coder and tester prompts: keep checks inside the project. Examples, tests and README commands run with a temporary `HOME` and store paths, and the tester never reads, changes or deletes a pre-existing file at the app's default location. Found by a real `/run` on a todo CLI: the coder ran the README example with the default store location and wrote `~/.todo.json` into the real home directory. This is a prompt rule, not a technical block, and it has not been tried in a real run yet.
+- Verified for real on that todo project (6 features): the coder on `sonnet` and the tester on `opus` as configured, the first escalations of the coder to `opus` after failed attempts (twice, on one feature), a tester `inconclusive` that became a question for a human and a run that stopped and resumed after the answer, and the corrected failure count (features that had passed were not escalated).
+- Known: the tester kept finding rarer and rarer corrupt-store crashes on one feature (three attempts); there is no natural stopping point for that kind of probing yet. Python 3.8 and coverage were not available on the test machine.
+
 ## 0.0.6 (pre-release)
 
 - Initializer prompt: the list is sized to the project (tiny tool 5-12 features, small app 12-40, large product 40-200) and edge cases are grouped into the same feature instead of one feature each. A real `/init` on a 3-command todo CLI produced 30 features with the old prompt and 6 with the new one.
