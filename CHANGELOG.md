@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.6 (pre-release)
+
+- Initializer prompt: the list is sized to the project (tiny tool 5-12 features, small app 12-40, large product 40-200) and edge cases are grouped into the same feature instead of one feature each. A real `/init` on a 3-command todo CLI produced 30 features with the old prompt and 6 with the new one.
+- `/init` now passes the configured initializer model to the Agent call explicitly. Found by a real run: with a `haiku` main session the initializer ran on `haiku`. After the change the Agent call carries `model: opus`.
+- Verified for real: `/init` end to end (scaffold, locked spec, examples, first commit, no permission denials). Not awaited before this release: the full result of the last run with the initializer on `opus`; the 6-feature result above came from a `haiku` initializer.
+- Known: after `/init` the config can be untrusted because the initializer sets `replay.command`; run `/wreck-it-ralph:trust` before the loop.
+
 ## 0.0.5 (pre-release)
 
 - Fix found by running `/add` for real with a `haiku` main session: the orchestrator left the planner Agent call in the background, so the proposal could not be filed (a background subagent finishes in a later turn where the command's `allowed-tools` no longer apply). `/add`, `/intake` and `/init` now require `run_in_background: false`.
