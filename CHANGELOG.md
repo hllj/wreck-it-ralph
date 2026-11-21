@@ -4,6 +4,7 @@
 
 - `agents` config block: model (and permission mode) per role, with defaults opus/sonnet/haiku; `step.sh agent-info <role>`; `spawn-info` and the headless runner honor them.
 - Tester defaults to `opus`. The coder escalates to `agents.coder.escalate_model` after failed attempts (`escalate_after`), and `ledger report` shows cost per role and model (the ledger now records `model` and `escalated`).
+- Usage is reported in tokens: the ledger stores input, output, cache creation and cache read separately; `TOTAL = input + output + cache creation` (cache reads excluded and shown as `CACHE_READ`); `ledger report --by session`; cost is shown only when known; the run log, `/status` and `last-run.md` show tokens first.
 - The planner always runs in plan mode (read-only tools, returns a payload that the caller files); new `run.sh --plan "<request>"`.
 
 ## 0.0.1 (pre-release)

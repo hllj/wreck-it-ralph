@@ -195,7 +195,7 @@ Every agent run is recorded in `.harness/ledger.jsonl`, which is git-ignored.
 - **Headless mode** reads cost, tokens, duration and turns from `claude -p --output-format json`.
   - The raw JSON is kept as `NNN-<agent>.json` next to the readable `.log`.
   - When the installed CLI supports `--max-budget-usd`, each call is also capped at the budget left for the run.
-- **Interactive mode** has the orchestrator record the token count and duration that the Agent tool reports. There is no dollar cost there, so use `max_tokens` and `max_wall_minutes` to cap interactive runs.
+- **Interactive mode** has the orchestrator record the token count and duration that the Agent tool reports. There is no dollar cost there, so use `max_tokens` and `max_wall_minutes` to cap interactive runs. Usage is reported in **tokens**, not dollars: `TOTAL = input + output + cache creation`; cache reads are shown separately (`CACHE_READ`) and are not counted. Cost appears only where the CLI reports it. `.harness/step.sh ledger report [--all] [--by session]` prints the table; in-session runs report a total only, so their row is marked `*`. Token budgets (`max_tokens`) are checked between agents, never in the middle of one call; only the dollar cap can also limit a single call.
 
 **How the caps work:**
 - Budgets apply **per run**. Each `run --new-run` starts a fresh budget, so raising a cap or starting again continues the work.

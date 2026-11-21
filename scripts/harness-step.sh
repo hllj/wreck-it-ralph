@@ -25,8 +25,8 @@
 #   ledger add <agent> [--cost USD] [--tokens N] [--input-tokens N] [--output-tokens N] [--ms N] [--turns N] [--mode M]
 #                                record what an agent run cost (headless: parsed from claude's JSON output;
 #                                interactive: the orchestrator passes the usage the Agent tool reported)
-#   ledger report [--all]        cost, runs, tokens and escalations per role and model (current run, or all runs)
-#   ledger total                 COST=, TOKENS=, MINUTES=, RUNS= for the current run
+#   ledger report [--all] [--by session]   tokens (in, out, cache, total), escalations and, when known, cost per role and model
+#   ledger total                 TOKENS= (in + out + cache creation; cache reads excluded), CACHE_READ=, COST=, MINUTES=, RUNS=
 #   budget                       REMAINING_USD= (empty when no cost cap) for the current run
 #   verify                       run gate-owned verify commands for claimed features (also run
 #                                automatically before the tester and at `end`); failures -> `fail`
@@ -262,7 +262,12 @@ ledger_totals() { # -> "cost tokens runs" for the current run (state .run)
   local run; run="$(st_get run)"
   if [[ -z "$run" || ! -f "$LEDGER" ]]; then echo "0 0 0"; return 0; fi
   jq -rs --argjson run "$run" '[.[] | select(.run == $run)] as $e
-    | "\([$e[].cost_usd // 0] | add // 0 | . * 10000 | round / 10000) \([$e[] | (.input_tokens // 0) + (.output_tokens // 0) + (.tokens // 0)] | add // 0) \($e | length)"' "$LEDGER" 2>/dev/null || echo "0 0 0"
+    | "\([$e[].cost_usd // 0] | add // 0 | . * 10000 | round / 10000) \([$e[] | (.input_tokens // 0) + (.output_tokens // 0) + (.cache_creation_tokens // 0) + (.tokens // 0)] | add // 0) \($e | length)"' "$LEDGER" 2>/dev/null || echo "0 0 0"
+}
+ledger_cache_read() { # cache-read tokens of the current run (not part of TOKENS)
+  local run; run="$(st_get run)"
+  if [[ -z "$run" || ! -f "$LEDGER" ]]; then echo 0; return 0; fi
+  jq -rs --argjson run "$run" '[.[] | select(.run == $run) | .cache_read_tokens // 0] | add // 0' "$LEDGER" 2>/dev/null || echo 0
 }
 run_minutes() { local run; run="$(st_get run)"; if [[ -n "$run" ]]; then echo $(( ($(date +%s) - run) / 60 )); else echo 0; fi; }
 
@@ -270,43 +275,71 @@ cmd_ledger() {
   local sub="${1:-}"; shift || true
   case "$sub" in
     add)
-      local agent="${1:?agent required}" cost="" tokens="" itok="" otok="" ms="" turns="" mode="interactive" model="" esc=""; shift
+      local agent="${1:?agent required}" cost="" tokens="" itok="" otok="" ms="" turns="" mode="interactive" model="" esc="" ccre="" cread=""; shift
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --cost) cost="${2:-}"; shift 2 ;; --tokens) tokens="${2:-}"; shift 2 ;;
           --input-tokens) itok="${2:-}"; shift 2 ;; --output-tokens) otok="${2:-}"; shift 2 ;;
-          --ms) ms="${2:-}"; shift 2 ;; --turns) turns="${2:-}"; shift 2 ;; --mode) mode="${2:-}"; shift 2 ;; --model) model="${2:-}"; shift 2 ;; --escalated) esc="true"; shift ;;
+          --ms) ms="${2:-}"; shift 2 ;; --turns) turns="${2:-}"; shift 2 ;; --mode) mode="${2:-}"; shift 2 ;; --cache-creation) ccre="${2:-}"; shift 2 ;; --cache-read) cread="${2:-}"; shift 2 ;; --model) model="${2:-}"; shift 2 ;; --escalated) esc="true"; shift ;;
           *) die "unknown ledger option: $1" ;;
         esac
       done
-      local v; for v in "$cost" "$tokens" "$itok" "$otok" "$ms" "$turns"; do [[ -z "$v" ]] || num_ok "$v" || die "ledger values must be numbers, got: $v"; done
+      local v; for v in "$cost" "$tokens" "$itok" "$otok" "$ccre" "$cread" "$ms" "$turns"; do [[ -z "$v" ]] || num_ok "$v" || die "ledger values must be numbers, got: $v"; done
       local run session; run="$(st_get run)"; session="$(st_get session)"
       jq -cn --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson run "${run:-0}" --argjson session "${session:-0}" \
-        --arg agent "$agent" --arg mode "$mode" --arg model "$model" --arg esc "$esc" --arg cost "$cost" --arg tokens "$tokens" --arg itok "$itok" --arg otok "$otok" --arg ms "$ms" --arg turns "$turns" '
+        --arg agent "$agent" --arg mode "$mode" --arg model "$model" --arg esc "$esc" --arg cost "$cost" --arg tokens "$tokens" --arg itok "$itok" --arg otok "$otok" --arg ccre "$ccre" --arg cread "$cread" --arg ms "$ms" --arg turns "$turns" '
         def n($x): if $x == "" then null else ($x | tonumber) end;
         {at: $at, run: $run, session: $session, agent: $agent, mode: $mode, model: (if $model == "" then null else $model end), escalated: (if $esc == "true" then true else null end), cost_usd: n($cost), tokens: n($tokens),
-         input_tokens: n($itok), output_tokens: n($otok), duration_ms: n($ms), turns: n($turns)} | with_entries(select(.value != null))' >> "$LEDGER"
+         input_tokens: n($itok), output_tokens: n($otok), cache_creation_tokens: n($ccre), cache_read_tokens: n($cread), duration_ms: n($ms), turns: n($turns)} | with_entries(select(.value != null))' >> "$LEDGER"
       echo "recorded"
       ;;
     total)
       local t; read -r -a t <<<"$(ledger_totals)"
-      emit COST "${t[0]}"; emit TOKENS "${t[1]}"; emit MINUTES "$(run_minutes)"; emit RUNS "${t[2]}"
+      emit COST "${t[0]}"; emit TOKENS "${t[1]}"; emit CACHE_READ "$(ledger_cache_read)"; emit MINUTES "$(run_minutes)"; emit RUNS "${t[2]}"
       ;;
-    report) # cost per role and model: ledger report [--all]  (default: the current run)
+    report) # tokens per role and model: ledger report [--all] [--by session]  (default: the current run)
       [[ -f "$LEDGER" ]] || { echo "no ledger yet"; return 0; }
-      local run=""; [[ "${1:-}" == "--all" ]] || run="$(st_get run)"
-      jq -rs --arg run "$run" '
+      local run="" by="role"
+      run="$(st_get run)"
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --all) run=""; shift ;;
+          --by) by="${2:-}"; [[ "$by" == session || "$by" == role ]] || die "--by role|session"; shift 2 ;;
+          *) die "usage: ledger report [--all] [--by role|session]" ;;
+        esac
+      done
+      local tbl
+      tbl="$(jq -rs --arg run "$run" --arg by "$by" '
+        def tot: (.input_tokens // 0) + (.output_tokens // 0) + (.cache_creation_tokens // 0) + (.tokens // 0);
+        def splitless: (.tokens != null and .input_tokens == null);
+        def r2: . * 100 | round / 100;
         [.[] | select($run == "" or (.run | tostring) == $run)] as $e
+        | ([$e[] | select(.cost_usd != null)] | length > 0) as $hascost
         | if ($e | length) == 0 then "no runs recorded"
-          else (["ROLE","MODEL","RUNS","ESCALATED","COST_USD","TOKENS","MINUTES"] | @tsv),
-            ($e | group_by([.agent, (.model // "-")])[] | . as $g
-              | [$g[0].agent, ($g[0].model // "-"), ($g | length), ([$g[] | select(.escalated)] | length),
-                 ([$g[].cost_usd // 0] | add | . * 100 | round / 100),
-                 ([$g[] | (.input_tokens // 0) + (.output_tokens // 0) + (.tokens // 0)] | add),
-                 ([$g[].duration_ms // 0] | add / 60000 | . * 10 | round / 10)] | @tsv),
-            (["TOTAL","-","\($e | length)","\([$e[] | select(.escalated)] | length)","\([$e[].cost_usd // 0] | add | . * 100 | round / 100)","-","-"] | @tsv)
-          end' "$LEDGER" | column -t -s "$(printf '\t')" ;;
-    *) die "usage: ledger add|total|report [--all]" ;;
+          else
+            ((if $by == "session" then ["SESSION"] else [] end)
+              + ["ROLE","MODEL","RUNS","ESC","IN","OUT","CACHE_NEW","TOTAL","CACHE_READ"]
+              + (if $hascost then ["COST_USD"] else [] end) + ["MINUTES"] | @tsv),
+            ($e | group_by(if $by == "session" then [.session, .agent, (.model // "-")] else [.agent, (.model // "-")] end)[] | . as $g
+              | ((if $by == "session" then [($g[0].session | tostring)] else [] end)
+                + [$g[0].agent, ($g[0].model // "-"), ($g | length), ([$g[] | select(.escalated)] | length),
+                   ([$g[].input_tokens // 0] | add), ([$g[].output_tokens // 0] | add), ([$g[].cache_creation_tokens // 0] | add),
+                   (([$g[] | tot] | add | tostring) + (if any($g[]; splitless) then "*" else "" end)),
+                   ([$g[].cache_read_tokens // 0] | add)]
+                + (if $hascost then [([$g[].cost_usd // 0] | add | r2)] else [] end)
+                + [([$g[].duration_ms // 0] | add / 60000 | . * 10 | round / 10)]) | @tsv),
+            (((if $by == "session" then ["TOTAL","-"] else ["TOTAL"] end)
+                + ["-", ($e | length), ([$e[] | select(.escalated)] | length),
+                   ([$e[].input_tokens // 0] | add), ([$e[].output_tokens // 0] | add), ([$e[].cache_creation_tokens // 0] | add),
+                   ([$e[] | tot] | add), ([$e[].cache_read_tokens // 0] | add)]
+                + (if $hascost then [([$e[].cost_usd // 0] | add | r2)] else [] end) + ["-"]) | @tsv),
+            (if any($e[]; splitless)
+             then "NOTE: * in-session runs report a total only (no in/out/cache split). TOTAL = in + out + cache_new; CACHE_READ is not counted"
+             else "NOTE: TOTAL = in + out + cache_new; CACHE_READ is not counted" end)
+          end' "$LEDGER")"
+      printf '%s\n' "$tbl" | grep -v '^NOTE: ' | column -t -s "$(printf '\t')"
+      printf '%s\n' "$tbl" | sed -n 's/^NOTE: //p' ;;
+    *) die "usage: ledger add|total|report [--all] [--by role|session]" ;;
   esac
 }
 
@@ -868,7 +901,7 @@ cmd_summary() {
     echo "- **Features:** $("$FL" stats)"
     echo "- **Sessions this run:** $(st_get ran)"
     local t; read -r -a t <<<"$(ledger_totals)"
-    echo "- **Spend this run:** \$${t[0]} | ${t[1]} tokens | $(run_minutes) min | ${t[2]} agent runs recorded"
+    echo "- **Usage this run:** ${t[1]} tokens$(jq -rn --argjson c "${t[0]}" 'if $c > 0 then " (cost $" + ($c|tostring) + ")" else "" end') | $(run_minutes) min | ${t[2]} agent runs recorded"
     if [[ -n "$rollout_text" ]]; then echo; echo "## Rollout $rollout"; echo; echo "$rollout_text"; fi
     echo
     echo "## Features"

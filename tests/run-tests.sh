@@ -804,7 +804,7 @@ check "token cap stops begin (code 10)"       'out_has "^CODE=10$" $S begin'
 set_cfg '.budget.max_tokens=0 | .budget.max_wall_minutes=1'
 jq '.run = (.run - 120)' .harness/.step_state.json > .harness/st && mv .harness/st .harness/.step_state.json
 check "wall-clock cap stops begin (code 10)"  'out_has "^REASON=budget exhausted: 2 minutes" $S begin'
-check "summary shows spend"                   '$S summary x 0 >/dev/null 2>&1; grep -q "Spend this run" .harness/last-run.md'
+check "summary shows spend"                   '$S summary x 0 >/dev/null 2>&1; grep -q "Usage this run" .harness/last-run.md'
 
 new_project 2
 S=.harness/step.sh
@@ -821,9 +821,9 @@ check ".harness changes do not count as diff" 'grep -q "^DIFF_LINES=0$" <<<"$OUT
 
 new_project 2
 FAKE_COST=0.25 .harness/run.sh >$LOGD/l1.log 2>&1
-check "headless run records each agent in the ledger" '[[ "$(wc -l < .harness/ledger.jsonl | tr -d " ")" == 4 ]] && jq -e "select(.mode==\"headless\" and .cost_usd==0.25 and .input_tokens==1000)" .harness/ledger.jsonl >/dev/null'
+check "headless run records each agent in the ledger" '[[ "$(wc -l < .harness/ledger.jsonl | tr -d " ")" == 4 ]] && jq -e "select(.mode==\"headless\" and .cost_usd==0.25 and .input_tokens==1000 and .output_tokens==200 and .cache_read_tokens==50 and (.cache_creation_tokens == 0))" .harness/ledger.jsonl >/dev/null'
 check "headless log keeps readable agent output" 'grep -q "fake claude ok" .harness/sessions/001-coder.log && grep -q "noisy stderr" .harness/sessions/001-coder.log && [[ -f .harness/sessions/001-coder.json ]]'
-check "runner prints spend per session"       'grep -q "spent: \$0.5" $LOGD/l1.log'
+check "runner prints tokens per session"      'grep -q "tokens: [0-9]* (cost \$0.5)" $LOGD/l1.log'
 new_project 3
 set_cfg '.budget.max_cost_usd=0.6'
 FAKE_COST=0.25 FAKE_BUDGET_FLAG=1 FAKE_ARGS_LOG=$LOGD/args.log .harness/run.sh >$LOGD/l2.log 2>&1; RC=$?
@@ -1124,8 +1124,24 @@ check "a step model pins and disables escalation" 'out_has "^MODEL=haiku$" $S sp
 set_trusted_cfg 'del(.pipeline[0].model) | .agents.coder.escalate_model = ""'
 check "no escalate_model means no escalation"  'out_has "^MODEL=sonnet$" $S spawn-info coder'
 $S ledger add coder --cost 0.5 --model opus --escalated >/dev/null; $S ledger add tester --cost 0.25 --model opus >/dev/null
-check "ledger report groups by role and model" 'out_has "coder *opus *1 *1 *0.5" $S ledger report --all && out_has "TOTAL *- *2 *1 *0.75" $S ledger report --all'
+check "ledger report groups by role and model" 'out_has "coder *opus *1 *1 " $S ledger report --all && out_has "TOTAL.* 0.75" $S ledger report --all'
 check "ledger records model and escalated"    'jq -es "any(.[]; .agent == \"coder\" and .model == \"opus\" and .escalated == true)" .harness/ledger.jsonl >/dev/null'
+
+echo "phase 6c: token report"
+new_project 1
+S=.harness/step.sh
+echo '{"run": 1, "session": 1}' > .harness/.step_state.json
+$S ledger add coder --model sonnet --input-tokens 1000 --output-tokens 200 --cache-creation 3000 --cache-read 50000 --ms 60000 >/dev/null
+$S ledger add tester --model opus --tokens 8000 >/dev/null
+check "ledger stores the token split"          'jq -es "any(.[]; .cache_creation_tokens == 3000 and .cache_read_tokens == 50000 and .output_tokens == 200)" .harness/ledger.jsonl >/dev/null'
+check "TOKENS excludes cache reads"            'out_has "^TOKENS=12200$" $S ledger total && out_has "^CACHE_READ=50000$" $S ledger total'
+check "report TOTAL = in + out + cache_new"    'out_has "coder *sonnet *1 *0 *1000 *200 *3000 *4200 *50000" $S ledger report'
+check "report marks total-only entries"        'out_has "tester *opus .* 8000\*" $S ledger report && out_has "total only" $S ledger report'
+check "report hides the cost column without cost" '! out_has "COST_USD" $S ledger report'
+$S ledger add coder --model sonnet --cost 0.5 --input-tokens 10 --output-tokens 5 >/dev/null
+check "report shows cost when some entry has it" 'out_has "COST_USD" $S ledger report'
+check "report --by session lists the session"  'out_has "^SESSION " $S ledger report --by session && out_has "^1 *coder" $S ledger report --by session'
+check "report rejects bad options"             '! $S ledger report --by nonsense >/dev/null 2>&1'
 
 echo "phase 5: presets and brownfield"
 SETUP="$ROOT/scripts/harness-setup.sh"

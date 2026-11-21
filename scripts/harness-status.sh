@@ -28,7 +28,7 @@ if [[ "${1:-}" == "--json" ]]; then
       runner: {running: ($pid != ""), pid: (if $pid == "" then null else ($pid | tonumber) end)},
       stop_flag: $stop,
       session: {in_progress: ($st.in_session // false), number: ($st.session // null), target: ($st.target // null)},
-      spend: (if $spend == "" then null else {cost_usd: (kv("COST") | tonumber? // 0), tokens: (kv("TOKENS") | tonumber? // 0), minutes: (kv("MINUTES") | tonumber? // 0)} end),
+      spend: (if $spend == "" then null else {cost_usd: (kv("COST") | tonumber? // 0), tokens: (kv("TOKENS") | tonumber? // 0), cache_read_tokens: (kv("CACHE_READ") | tonumber? // 0), minutes: (kv("MINUTES") | tonumber? // 0)} end),
       last_event: $last }'
   exit 0
 fi
@@ -42,7 +42,7 @@ echo "Next:      ${NEXT:-<none ready>}"
 if [[ -f "$HARNESS_DIR/.step_state.json" ]]; then
   SPEND="$("$(dirname "$FL")/harness-step.sh" ledger total 2>/dev/null || true)"
   kvs() { sed -n "s/^$1=//p" <<<"$SPEND"; }
-  if [[ -n "$SPEND" ]]; then echo "Spend:     \$$(kvs COST) | $(kvs TOKENS) tokens | $(kvs MINUTES) min this run"; fi
+  if [[ -n "$SPEND" ]]; then echo "Usage:     $(kvs TOKENS) tokens (+ $(kvs CACHE_READ) cache reads) | $(kvs MINUTES) min this run$(jq -rn --arg c "$(kvs COST)" 'if (($c | tonumber? // 0) > 0) then " | cost $" + $c else "" end')"; fi
 fi
 Q="$("$FL" questions)"
 if [[ -n "$Q" ]]; then echo; echo "Waiting for a human (answer with /wreck-it-ralph:backlog answer <ID> \"...\"):"; printf '%s\n' "$Q" | sed 's/\t/: /; s/^/  /'; fi

@@ -115,16 +115,19 @@ stop_run() { REASON="$1"; exit "$2"; } # reason, exit code
 SUPPORTS_BUDGET=0
 "$CLAUDE_BIN" --help </dev/null 2>/dev/null | grep -q -- '--max-budget-usd' && SUPPORTS_BUDGET=1
 
+cost_suffix() { jq -rn --arg c "${1:-0}" 'if (($c | tonumber? // 0) > 0) then " (cost $" + $c + ")" else "" end'; }
+
 record_usage() { # name jsonfile [model] [escalated] -> ledger line (tolerant: unknown/old output just records nothing)
   local name="$1" json="$2" fmodel="${3:-}" fesc="${4:-}" fields
   fields="$(jq -r 'select(type == "object") | [(.total_cost_usd // .cost_usd // ""), (.usage.input_tokens // ""),
-      ((.usage.output_tokens // 0) + (.usage.cache_creation_input_tokens // 0) | tostring), (.duration_ms // ""), (.num_turns // "")] | @tsv' "$json" 2>/dev/null | head -n1)" || return 0
+      (.usage.output_tokens // ""), (.usage.cache_creation_input_tokens // ""), (.usage.cache_read_input_tokens // ""),
+      (.duration_ms // ""), (.num_turns // "")] | map(tostring) | join("|")' "$json" 2>/dev/null | head -n1)" || return 0
   [[ -z "$fields" ]] && return 0
-  local cost itok otok ms turns; IFS=$'\t' read -r cost itok otok ms turns <<<"$fields"
+  local cost itok otok ccre cread ms turns; IFS='|' read -r cost itok otok ccre cread ms turns <<<"$fields"
   local a=(ledger add "$name" --mode headless)
   [[ -n "$fmodel" ]] && a+=(--model "$fmodel"); [[ "$fesc" == true ]] && a+=(--escalated)
   [[ -n "$cost" ]] && a+=(--cost "$cost"); [[ -n "$itok" ]] && a+=(--input-tokens "$itok")
-  [[ -n "$otok" ]] && a+=(--output-tokens "$otok"); [[ -n "$ms" ]] && a+=(--ms "$ms"); [[ -n "$turns" ]] && a+=(--turns "$turns")
+  [[ -n "$otok" ]] && a+=(--output-tokens "$otok"); [[ -n "$ccre" ]] && a+=(--cache-creation "$ccre"); [[ -n "$cread" ]] && a+=(--cache-read "$cread"); [[ -n "$ms" ]] && a+=(--ms "$ms"); [[ -n "$turns" ]] && a+=(--turns "$turns")
   "$STEP" "${a[@]}" >/dev/null 2>&1 || true
 }
 
@@ -235,7 +238,7 @@ while true; do
 
   END="$("$STEP" end)"
   SPEND="$("$STEP" ledger total)"
-  log "── session $n done | $(kv STATS "$END") | commits: $(kv COMMITS "$END") | diff: $(kv DIFF_LINES "$END") lines | no-progress streak: $(kv STUCK "$END") | spent: \$$(kv COST "$SPEND")"
+  log "── session $n done | $(kv STATS "$END") | commits: $(kv COMMITS "$END") | diff: $(kv DIFF_LINES "$END") lines | no-progress streak: $(kv STUCK "$END") | tokens: $(kv TOKENS "$SPEND")$(cost_suffix "$(kv COST "$SPEND")")"
   [[ $session_failed -eq 1 ]] && log "   (a blocking agent failed this session)"
   [[ -n "$(kv VERIFY_FAILED "$END")" ]] && log "   verify commands failed: $(kv VERIFY_FAILED "$END")"
   [[ -n "$(kv NEEDS_HUMAN "$END")" ]] && log "   escalated to a human: $(kv NEEDS_HUMAN "$END") (answer with /wreck-it-ralph:backlog answer <ID> \"...\")"
