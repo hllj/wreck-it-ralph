@@ -4,6 +4,8 @@ if [[ "${1:-}" == "--help" ]]; then echo "  --output-format <format>"; [[ -n "${
 [[ -n "${FAKE_ARGS_LOG:-}" ]] && printf '%s\n' "$*" >> "$FAKE_ARGS_LOG"
 SYS=""; FMT=text; while [[ $# -gt 0 ]]; do case "$1" in --append-system-prompt) SYS="$2"; shift 2;; --output-format) FMT="$2"; shift 2;; *) shift;; esac; done
 TASK="$(cat)"
+[[ -n "${FAKE_TASK_LOG:-}" ]] && printf '%s\n' "$TASK" >> "$FAKE_TASK_LOG"
+[[ -n "${FAKE_SLEEP:-}" ]] && sleep "$FAKE_SLEEP"
 if [[ "$FMT" == json ]]; then exec 3>&1 1>"${TMPDIR:-/tmp}/fake-claude-out.$$"; fi
 finish() {
   if [[ "$FMT" == json ]]; then
@@ -31,6 +33,9 @@ if [[ "$SYS" == *"CODER agent"* ]]; then
   [[ "${FAKE_MODE:-}" == "selfpass" && -n "$TARGET" ]] && $FL pass "$TARGET" >/dev/null
   [[ "${FAKE_MODE:-}" == "dirty" ]] && echo junk > leftover.txt
 elif [[ "$SYS" == *"TESTER agent"* ]]; then
+  [[ "${FAKE_MODE:-}" == "testeredit" && -n "$TARGET" ]] && { echo hacked >> "src_$TARGET.txt"; git add -A; git commit -qm "tester fix" >/dev/null 2>&1; }
+  [[ "${FAKE_MODE:-}" == "testerstray" ]] && echo probe > probe-leftover.txt
+  [[ "${FAKE_MODE:-}" == "testerharness" ]] && { echo "- tester note" >> .harness/progress.md; git add -A; git commit -qm "harness: tester progress entry" >/dev/null 2>&1; }
   for id in $($FL claimed); do $FL pass "$id" >/dev/null; done
 elif [[ "$SYS" == *"Use the Skill tool"* || "$TASK" == *"Use the Agent tool with subagent_type"* ]]; then
   if [[ -n "${FAKE_UNAVAILABLE:-}" ]]; then echo "EXTENSION UNAVAILABLE: x"; exit 0; fi

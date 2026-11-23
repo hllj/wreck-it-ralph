@@ -61,7 +61,7 @@ case "$PRESET" in ""|web|cli|api|library|data|docs|none) ;; *) echo "❌ --prese
 refresh_wrappers() {
   mkdir -p "$HARNESS_DIR"
   local pair name target
-  for pair in "feature-list.sh:feature-list.sh" "step.sh:harness-step.sh" "run.sh:harness-run.sh" "status.sh:harness-status.sh" "backlog.sh:backlog.sh" "doctor.sh:harness-doctor.sh" "notify.sh:notify.sh" "trigger.sh:harness-trigger.sh" "intake.sh:harness-intake.sh" "replay.sh:harness-replay.sh" "report.sh:harness-report.sh" "coverage.sh:harness-coverage.sh"; do
+  for pair in "feature-list.sh:feature-list.sh" "step.sh:harness-step.sh" "run.sh:harness-run.sh" "status.sh:harness-status.sh" "backlog.sh:backlog.sh" "doctor.sh:harness-doctor.sh" "notify.sh:notify.sh" "trigger.sh:harness-trigger.sh" "intake.sh:harness-intake.sh" "replay.sh:harness-replay.sh" "report.sh:harness-report.sh" "coverage.sh:harness-coverage.sh" "calibrate.sh:harness-calibrate.sh"; do
     name="${pair%%:*}"; target="${pair##*:}"
     cat > "$HARNESS_DIR/$name" <<WRAP
 #!/bin/bash
@@ -222,7 +222,7 @@ fi
 if [[ $FOR_INIT -eq 1 || $FORCE -eq 1 ]]; then find "$HARNESS_DIR/sessions" -type f -delete 2>/dev/null || true; fi
 
 refresh_wrappers
-CREATED+=("wrappers: feature-list.sh step.sh run.sh status.sh backlog.sh doctor.sh notify.sh trigger.sh intake.sh replay.sh report.sh coverage.sh")
+CREATED+=("wrappers: feature-list.sh step.sh run.sh status.sh backlog.sh doctor.sh notify.sh trigger.sh intake.sh replay.sh report.sh coverage.sh calibrate.sh")
 
 if [[ ! -f "$HARNESS_DIR/README.md" ]]; then
   cat > "$HARNESS_DIR/README.md" <<'EOF'
@@ -246,6 +246,7 @@ EOF
 fi
 
 ensure_all_ignores "$HARNESS_DIR"
+if [[ ! -f "$HARNESS_DIR/calibration/cases.json" ]]; then HARNESS_DIR="$HARNESS_DIR" "$PLUGIN_ROOT/scripts/harness-calibrate.sh" seed >/dev/null 2>&1 && CREATED+=("calibration/cases.json (known-answer cases for the evaluator)"); fi
 
 if ! git rev-parse --git-dir >/dev/null 2>&1; then git init -q; CREATED+=("git repository"); fi
 

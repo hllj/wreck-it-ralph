@@ -44,6 +44,10 @@ if [[ -f "$HARNESS_DIR/.step_state.json" ]]; then
   kvs() { sed -n "s/^$1=//p" <<<"$SPEND"; }
   if [[ -n "$SPEND" ]]; then echo "Usage:     $(kvs TOKENS) tokens (+ $(kvs CACHE_READ) cache reads) | $(kvs MINUTES) min this run$(jq -rn --arg c "$(kvs COST)" 'if (($c | tonumber? // 0) > 0) then " | cost $" + $c else "" end')"; fi
 fi
+if [[ -f "$HARNESS_DIR/calibration/cases.json" || -s "$HARNESS_DIR/calibration/outcomes.jsonl" ]]; then
+  CAL="$("$(dirname "$FL")/harness-calibrate.sh" report --json 2>/dev/null || true)"
+  [[ -n "$CAL" ]] && echo "Evaluator: $(jq -r 'def p: if . == null then "n/a" else "\(. * 1000 | round / 10)%" end; "false positives \(.false_positives) (rate \(.false_positive_rate | p)), false negatives \(.false_negatives), examples verified \(.coverage.examples_verified)/\(.coverage.examples)"' <<<"$CAL")"
+fi
 Q="$("$FL" questions)"
 if [[ -n "$Q" ]]; then echo; echo "Waiting for a human (answer with /wreck-it-ralph:backlog answer <ID> \"...\"):"; printf '%s\n' "$Q" | sed 's/\t/: /; s/^/  /'; fi
 if [[ -f "$HARNESS_DIR/proposals.json" ]]; then

@@ -37,6 +37,7 @@
 # begin/end stop codes:       2 max sessions, 3 stuck, 8 waiting for a human answer, 9 blocked by dependencies,
 #                             10 budget exhausted (cost/tokens/wall time), 11 session diff over budget.max_diff_lines,
 #                             12 rollout branch problem (detached HEAD, no commits, or not on the run branch)
+#                             13 evaluator calibration failed (the replay comparison passes a known-bad case)
 #
 # Rollout (config `rollout`, or --rollout on a new run):
 #   L3  unattended: commit on the current branch (default)
@@ -141,7 +142,7 @@ mcp_path() { cfg '.mcp_config // ""'; }
 trust_material() { # everything that can run commands or steer agents with elevated rights
   jq -S '{permission_mode, allowed_tools, final_verify_command, verify_static, claude_bin, model, mcp_config,
           uses: [.pipeline[]? | .use // empty], models: [.pipeline[]? | .model // empty], agents: (.agents // {}), hooks: (.hooks // {}),
-          rollout_push, rollout_pr, parallel} + (if .replay then {replay} else {} end) + (if .coverage then {coverage: {tool: .coverage.tool, cmd: .coverage.cmd}} else {} end)' "$CFG"
+          rollout_push, rollout_pr, parallel} + (if .replay then {replay} else {} end) + (if .tester then {tester} else {} end) + (if .coverage then {coverage: {tool: .coverage.tool, cmd: .coverage.cmd}} else {} end)' "$CFG"
   local m; m="$(mcp_path)"; if [[ -n "$m" && -f "$m" ]]; then echo "## mcp: $m"; cat "$m"; fi
   local f; for f in $(ls "$HARNESS_DIR"/agents/*.md 2>/dev/null | sort); do echo "## agent: $f"; cat "$f"; done
 }
@@ -173,6 +174,8 @@ cmd_trust() {
       echo "final_verify_command: $(cfg '.final_verify_command // ""')"
       echo "verify_static:        $(cfg '.verify_static // ""')"
       if [[ -n "$(cfg '.coverage.cmd // ""')" ]]; then echo "coverage.cmd:         $(cfg '.coverage.cmd') (runs the test suite under coverage)"; fi
+      if [[ "$(cfg '(.tester.allow_paths // []) | length')" != 0 ]]; then echo "tester.allow_paths:    $(cfg '.tester.allow_paths | join(", ")') (the read-only guard ignores these paths)"; fi
+      if [[ "$(cfg '.tester.read_only | if . == null then true else . end')" != true ]]; then echo "tester.read_only:     false (the tester may edit product source)"; fi
       if [[ -n "$(cfg '.replay.command // ""')" ]]; then echo "replay.command:       $(cfg '.replay.command') (runs with example arguments; replay.base_url: $(cfg '.replay.base_url // ""'))"; fi
       local u; u="$(jq -r '.pipeline[]? | select(.use) | "  \(.name // "-"): \(.use)\(if .optional then " (optional)" else "" end)"' "$CFG")"
       if [[ -n "$u" ]]; then echo; echo "Pipeline extensions (other plugins' agents/skills, shell steps):"; echo "$u"; fi
@@ -350,6 +353,27 @@ cmd_budget() {
   emit REMAINING_USD "$(jq -n --argjson c "$cap" --argjson s "${t[0]}" '[$c - $s, 0] | max | . * 100 | floor / 100')"
 }
 
+# Wall-time limits for ONE agent call: the tightest of budget.max_agent_minutes, what is left of
+# budget.max_session_minutes (since `begin`) and what is left of budget.max_wall_minutes (since the run began).
+# Sets T_SECS (0 = no cap), T_SRC (agent|session|run) and T_EXPIRED (true when a session/run cap is already used up).
+timeout_calc() {
+  local now cap es run left; now="$(date +%s)"; T_SECS=0; T_SRC=""; T_EXPIRED=false
+  _t_pick() { # seconds-left source
+    left="$1"; if (( left <= 0 )); then T_EXPIRED=true; left=1; fi
+    if (( T_SECS == 0 || left < T_SECS )); then T_SECS=$left; T_SRC="$2"; fi
+  }
+  cap="$(bcfg max_agent_minutes)"
+  if [[ "$cap" != "0" ]]; then _t_pick "$(jq -n --argjson c "$cap" '$c * 60 | floor')" agent; fi
+  cap="$(bcfg max_session_minutes)"; es="$(st_get session_epoch)"
+  if [[ "$cap" != "0" && -n "$es" ]]; then _t_pick "$(jq -n --argjson c "$cap" --argjson e "$es" --argjson n "$now" '$c * 60 - ($n - $e) | floor')" session; fi
+  cap="$(bcfg max_wall_minutes)"; run="$(st_get run)"
+  if [[ "$cap" != "0" && -n "$run" ]]; then _t_pick "$(jq -n --argjson c "$cap" --argjson e "$run" --argjson n "$now" '$c * 60 - ($n - $e) | floor')" run; fi
+  return 0
+}
+cmd_timeout() { # [agent]: how long may this agent run? (the headless runner enforces it; interactive mode cannot kill a subagent)
+  timeout_calc; emit TIMEOUT_SECONDS "$T_SECS"; emit SOURCE "$T_SRC"; emit EXPIRED "$T_EXPIRED"
+}
+
 budget_exhausted() { # prints a reason when a run budget is used up
   local t cap; read -r -a t <<<"$(ledger_totals)"
   cap="$(bcfg max_cost_usd)"
@@ -368,6 +392,42 @@ session_diff_lines() { # lines added+removed since the session started, outside 
 }
 
 ids_json() { "$FL" ids --status "$1" | jq -R -s -c 'split("\n")|map(select(length>0))'; }
+
+# ---------- tester read-only guard ----------
+# The tester is an independent evaluator: it may write under .harness/ and temp dirs, never the product. The gate
+# does not trust that to a prompt: it fingerprints the product tree (everything outside .harness/ and
+# tester.allow_paths) as a git tree object when the tester starts and again at `end`.
+product_tree() {
+  local idx rc=0 spec=(. ':!.harness') p
+  while IFS= read -r p; do [[ -n "$p" ]] && spec+=(":(exclude)$p"); done < <(jq -r '(.tester.allow_paths // [])[]' "$CFG" 2>/dev/null)
+  idx="$(mktemp "${TMPDIR:-/tmp}/ralph-idx.XXXXXX")"; rm -f "$idx"
+  GIT_INDEX_FILE="$idx" git add -A -- "${spec[@]}" >/dev/null 2>&1 || rc=1
+  [[ $rc -eq 0 ]] && GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null || rc=1
+  rm -f "$idx"; return $rc
+}
+tester_guard_on() { [[ "$(cfg '.tester.read_only | if . == null then true else . end')" == true ]]; }
+GUARD_FILES=""; GUARD_STRAY=""
+# Compare the product tree with the tester's start snapshot. Puts every change back. Sets GUARD_FILES (tracked
+# source changed: the tester's evidence is void) and GUARD_STRAY (new untracked files only: probe leftovers, removed).
+tester_guard() {
+  local before after line st path
+  before="$(st_get tester_tree)"; [[ -n "$before" ]] || return 0
+  st_set_s tester_tree ""
+  after="$(product_tree)" || { echo "harness: WARNING could not fingerprint the product tree; tester read-only check skipped" >&2; return 0; }
+  [[ "$after" == "$before" ]] && return 0
+  while IFS=$'\t' read -r st path; do
+    [[ -z "$path" ]] && continue
+    if [[ "$st" == A ]]; then
+      if git cat-file -e "HEAD:$path" 2>/dev/null; then GUARD_FILES="$GUARD_FILES $path"; git rm -q -f -- "$path" >/dev/null 2>&1 || rm -f -- "$path"
+      else GUARD_STRAY="$GUARD_STRAY $path"; rm -rf -- "$path"; fi
+    else
+      GUARD_FILES="$GUARD_FILES $path"; git checkout -q "$before" -- "$path" >/dev/null 2>&1 || echo "harness: WARNING could not restore $path" >&2
+    fi
+  done < <(git -c core.quotepath=off diff-tree -r --name-status "$before" "$after")
+  GUARD_FILES="${GUARD_FILES# }"; GUARD_STRAY="${GUARD_STRAY# }"
+  [[ -n "$GUARD_FILES" ]] && safe_commit "harness: reverted the tester's edits to product source (the tester is read-only)" || true
+  return 0
+}
 
 cmd_begin() {
   local newrun=0 maxs="" owner=0 rollout_opt=""
@@ -399,6 +459,14 @@ cmd_begin() {
     fi
     if lock_live; then
       stop_decision "another harness loop is already running here (lock: $LOCK). If none is running, clear it with: .harness/step.sh unlock" 7; return 0
+    fi
+    if [[ "$(cfg '.calibration.enabled | if . == null then true else . end')" == true ]]; then
+      local crc=0 cout
+      cout="$("$PLUGIN_ROOT/scripts/harness-calibrate.sh" run --quiet 2>&1)" || crc=$?
+      if [[ $crc -eq 2 ]]; then
+        stop_decision "evaluator calibration failed: the replay comparison passes a known-bad case (a false positive, the most dangerous error). Details: .harness/calibrate.sh run. $(tail -n 1 <<<"$cout")" 13; return 0
+      fi
+      [[ $crc -ne 0 ]] && emit NOTE "evaluator calibration: $(tail -n 1 <<<"$cout") (a false negative: the engine fails a case that should pass; see .harness/calibrate.sh run)"
     fi
     lock_write "$owner"
     if [[ -f "$HARNESS_DIR/STOP" ]]; then rm -f "$HARNESS_DIR/STOP"; emit NOTE "cleared a STOP flag left from an earlier cancel (starting a new run overrides it)"; fi
@@ -483,12 +551,15 @@ cmd_begin() {
   st_set verify_done 0
   st_set_s verify_failed ""
   st_set_s head_before "$(git rev-parse HEAD 2>/dev/null || echo none)"
+  st_set_s tester_tree ""
+  if [[ -f "$HARNESS_DIR/calibration/cases.json" ]]; then cp "$HARNESS_DIR/calibration/cases.json" "$HARNESS_DIR/.calibration_cases.snapshot"; else rm -f "$HARNESS_DIR/.calibration_cases.snapshot"; fi
   st_set_s target "$target"
   # Snapshot the spec lock and proposals: an approval made during the session is undone at `end`.
   if [[ -f "$LIST_LOCK" ]]; then cp "$LIST_LOCK" "$SNAP_LOCK"; else rm -f "$SNAP_LOCK"; fi
   if [[ -f "$PROPS" ]]; then cp "$PROPS" "$SNAP_PROPS"; else rm -f "$SNAP_PROPS"; fi
   st_set in_session true
   st_set_s session_started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  st_set session_epoch "$(date +%s)"
   fire session_started "session=$n" "target=${target:-none}" "stats=$("$FL" stats)" >&2
   emit DECISION continue; emit SESSION "$n"; emit TARGET "${target:-none}"; emit STATS "$("$FL" stats)"
 }
@@ -531,6 +602,11 @@ feature_context() { # id -> extra task text for a retry: last failure, human ans
     | ([ (if (.answer // "") != "" then "Human answer for \(.id): \(.answer)." else empty end),
          (if (.notes // "") != "" then "Previous attempt failed: \(.notes | .[0:400]). Do not repeat the approach that failed." else empty end) ] | join(" "))' \
     "$HARNESS_DIR/feature_list.json"
+  local rj="$HARNESS_DIR/evidence/$1/report.json"
+  if [[ -f "$rj" ]]; then
+    jq -r 'select(.status == "failed" and ((.findings // []) | length) > 0)
+      | "Tester findings (fix each; they are observed, not guesses): " + ([.findings[0:5][] | "[\(.severity // "?")/\(.kind // "?")\(if .criterion then " " + (.criterion | tostring) else "" end)] input \(.input | tojson | .[0:120]) expected \(.expected | tojson | .[0:120]) observed \(.observed | tojson | .[0:120])"] | join(" | "))' "$rj" 2>/dev/null || true
+  fi
 }
 
 cmd_task() {
@@ -550,6 +626,7 @@ cmd_task() {
     fi
   fi
   if [[ "$agent" == "tester" ]]; then st_set_s tester_started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; fi
+  if [[ "$agent" == "tester" ]] && tester_guard_on; then st_set_s tester_tree "$(product_tree 2>/dev/null || true)"; fi
   if [[ "$agent" == "tester" ]]; then st_set verified_ids "$("$FL" claimed | jq -R -s -c 'split("\n")|map(select(length>0))')"; fi
   local task="Harness session $n. Progress: $("$FL" stats). Target feature: ${target:-none}. Features awaiting verification: $(claimed_ids)."
   local ctx; ctx="$(feature_context "$target")"
@@ -560,6 +637,10 @@ cmd_task() {
     task="$task Commits this session: $(st_get head_before)..HEAD. Features passed this session: ${np:-none}.
 You are an extension step '$agent' in a long-running agent harness (state in .harness/, see .harness/progress.md). Do your job on the work of this session.
 Rules: never edit .harness/feature_list.json and never run feature-list.sh pass/claim. If you find that a feature passed this session is actually broken, run: .harness/feature-list.sh fail <ID> \"<precise reason>\". To suggest follow-up work, file a proposal: .harness/backlog.sh propose --by $agent --reason \"...\" --file <payload.json> (payload: {\"add\":[{\"description\":...,\"steps\":[...]}]}). Append a short '$agent' entry with your findings to .harness/progress.md, commit any change you make, and leave git status clean. Finish with a 2-3 line summary."
+  fi
+  timeout_calc
+  if [[ "$T_SECS" -gt 0 ]]; then
+    task="$task Time box: you have about $(( (T_SECS + 59) / 60 )) minutes of wall time ($T_SRC limit). If it is running out, commit what works, record the state in .harness/progress.md and stop; do not start new work or keep probing."
   fi
   echo "$task"
 }
@@ -644,7 +725,7 @@ check_backlog_snapshot() {
 cmd_end() {
   local n limit stuck before after
   n="$(st_get session)"; limit="$(cfg '.stuck_limit // 3')"; stuck="$(st_get stuck)"
-  REVERTED=0
+  REVERTED=0; CAL_RESTORED=0
   if [[ "$(fanout_workers | jq length)" -gt 0 ]]; then cmd_fanout merge >/dev/null; fi   # a runner that skipped it
   check_backlog_snapshot
   cmd_verify >/dev/null
@@ -652,6 +733,23 @@ cmd_end() {
     local id; for id in $(claimed_ids); do "$FL" pass "$id" >/dev/null; echo "harness: (no tester in pipeline) accepted claim $id" >&2; done
   fi
   local unauth=""
+  if [[ -f "$HARNESS_DIR/.calibration_cases.snapshot" ]] && ! cmp -s "$HARNESS_DIR/.calibration_cases.snapshot" "$HARNESS_DIR/calibration/cases.json" 2>/dev/null; then
+    cp "$HARNESS_DIR/.calibration_cases.snapshot" "$HARNESS_DIR/calibration/cases.json"
+    echo "harness: an agent edited the calibration cases (human-owned); restored" >&2
+    CAL_RESTORED=1
+  fi
+  if has_tester; then # the tester is read-only on the product: undo and void its verdicts if it edited source
+    tester_guard
+    if [[ -n "$GUARD_FILES" ]]; then
+      local gid
+      for gid in $(newly_passing); do
+        "$FL" fail "$gid" "the tester modified product source ($(cut -c1-160 <<<"$GUARD_FILES")); the edits were reverted and its verdict is void. The tester only reports findings, it never fixes" >/dev/null
+        unauth="$unauth $gid"
+      done
+      echo "harness: WARNING the tester edited product source ($GUARD_FILES); reverted, and its passes this session were reset" >&2
+    fi
+    [[ -n "$GUARD_STRAY" ]] && echo "harness: the tester left new files in the project ($GUARD_STRAY); removed (probe leftovers belong in a temp dir)" >&2
+  fi
   if has_tester; then # only features claimed when the tester started may become passing
     local id
     for id in $(jq -r -n --argjson before "$(st_get_json pass_ids_before)" --argjson ok "$(st_get_json verified_ids)" \
@@ -718,6 +816,7 @@ cmd_end() {
   for fid2 in $(jq -r --arg since "${since:-0}" '.features[] | select(.status == "needs_human" and ((.attempts // [])[-1] | (.at // "") >= $since)) | .id' "$HARNESS_DIR/feature_list.json"); do
     fire needs_human "feature=$fid2" "session=$n" "question=$(jq -r --arg id "$fid2" '.features[] | select(.id == $id) | .question // "" | .[0:300]' "$HARNESS_DIR/feature_list.json")" >&2
   done
+  CAL_SCAN=""; [[ "$(cfg '.calibration.enabled | if . == null then true else . end')" == true ]] && CAL_SCAN="$("$PLUGIN_ROOT/scripts/harness-calibrate.sh" scan 2>/dev/null | tail -n 1 || true)"
   check_spec_lock
   rotate_progress
   ensure_clean_state "$n"
@@ -736,6 +835,12 @@ cmd_end() {
     large=1; emit WARN "session $n changed $lines lines (budget.max_diff_lines $maxd); review the commits"
   fi
   [[ -n "$unauth" ]] && emit UNVERIFIED_RESET "${unauth# }"
+  [[ -n "$GUARD_FILES" ]] && emit TESTER_EDITED "$GUARD_FILES"
+  [[ -n "$GUARD_STRAY" ]] && emit WARN "the tester left new files in the project; removed: $GUARD_STRAY"
+  [[ ${CAL_RESTORED:-0} -eq 1 ]] && emit WARN "an agent edited the calibration cases; restored"
+  if [[ "$(cfg '.calibration.enabled | if . == null then true else . end')" == true ]]; then
+    [[ "${CAL_SCAN:-}" =~ ^calibrate:\ ([1-9][0-9]*)\ new ]] && emit WARN "evaluator calibration: ${BASH_REMATCH[1]} feature(s) passed and later failed (possible false positives). Review: .harness/calibrate.sh candidates"
+  fi
   fire session_ended "session=$n" "stats=$("$FL" stats)" "stuck=$stuck/$limit" >&2
   [[ -n "$(st_get verify_failed)" ]] && emit VERIFY_FAILED "$(st_get verify_failed)"
   [[ -n "$escalated" ]] && emit NEEDS_HUMAN "${escalated# }"
@@ -959,6 +1064,7 @@ case "$cmd" in
   note)        cmd_note "$@" ;;
   ledger)      cmd_ledger "$@" ;;
   budget)      cmd_budget ;;
+  timeout)     cmd_timeout "$@" ;;
   unlock)      cmd_unlock ;;
   *) sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
 esac

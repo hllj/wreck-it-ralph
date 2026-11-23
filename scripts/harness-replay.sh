@@ -83,27 +83,8 @@ sha="$(git rev-parse HEAD 2>/dev/null || echo none)"
 hash256() { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi | cut -d' ' -f1; }
 run_id="$(date +%s)$$"
 
-# comparison: jq program, fed {expect, assertions, actual}; prints one check object per expect key
-CMP='
-def sub($e; $a):
-  if ($e | type) == "object" then (($a | type) == "object") and ($e | to_entries | all(. as $kv | ($a | has($kv.key)) and sub($kv.value; $a[$kv.key])))
-  elif ($e | type) == "array" then (($a | type) == "array") and (($e | length) == ($a | length)) and ([range(0; $e | length)] | all(. as $i | sub($e[$i]; $a[$i])))
-  else $e == $a end;
-def chk($m; $e; $a):
-  if $m == "exact" then $e == $a
-  elif $m == "partial" then sub($e; $a)
-  elif $m == "contains" then
-    (if ($a | type) == "string" then ($a | contains($e | tostring))
-     elif ($a | type) == "array" then (if ($e | type) == "array" then ($e | all(. as $x | $a | index([$x]) != null)) else ($a | index([$e]) != null) end)
-     else false end)
-  elif $m == "regex" then (try (($a | tostring) | test($e | tostring)) catch false)
-  else false end;
-.actual as $act | .assertions as $as
-| (.expect // {}) | to_entries | map(
-    .key as $k | .value as $e
-    | ($as[$k] // (if ($e | type) == "object" then "partial" else "exact" end)) as $m
-    | {key: $k, mode: $m, expected: $e, actual: ($act[$k] // null), present: ($act | has($k))}
-    | .pass = (.present and chk(.mode; .expected; .actual)))'
+# comparison: scripts/harness-compare.jq, fed {expect, assertions, actual}; prints one check object per expect key
+CMP_FILE="$HERE/harness-compare.jq"
 
 # exec_step <step-json> <dir> <default-adapter>  ->  STEP_STATUS (pass|fail|error|blocked), STEP_CHECKS, STEP_DETAIL
 exec_step() {
@@ -118,7 +99,7 @@ exec_step() {
   arc=0; "$HERE/adapters/$adapter.sh" "$d/example.json" "$d" > "$d/adapter.log" 2>&1 || arc=$?
   STEP_CHECKS='[]'; STEP_DETAIL="$(head -c 300 "$d/adapter.log")"
   case $arc in
-    0) STEP_CHECKS="$(jq -c --slurpfile a "$d/actual.json" '{expect, assertions: (.assertions // {}), actual: $a[0]}' "$d/example.json" | jq -c "$CMP")"
+    0) STEP_CHECKS="$(jq -c --slurpfile a "$d/actual.json" '{expect, assertions: (.assertions // {}), actual: $a[0]}' "$d/example.json" | jq -c -f "$CMP_FILE")"
        if jq -e 'all(.[]; .pass)' <<<"$STEP_CHECKS" >/dev/null; then STEP_STATUS=pass; else STEP_STATUS=fail; fi ;;
     3) STEP_STATUS=blocked ;;
     *) STEP_STATUS=error ;;

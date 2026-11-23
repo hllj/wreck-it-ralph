@@ -837,6 +837,30 @@ new_project 1
 FAKE_ARGS_LOG=$LOGD/args2.log .harness/run.sh >/dev/null 2>&1
 check "no --max-budget-usd when the CLI lacks it" '! grep -q -- "--max-budget-usd" $LOGD/args2.log && grep -q -- "--output-format json" $LOGD/args2.log'
 
+# wall time: per-agent and per-session limits
+new_project 1
+S=.harness/step.sh
+set_cfg '.budget.max_agent_minutes=0 | .budget.max_session_minutes=0 | .budget.max_wall_minutes=0'
+$S begin --new-run >/dev/null
+check "no caps: timeout is unlimited"          'out_has "^TIMEOUT_SECONDS=0$" $S timeout coder && out_has "^EXPIRED=false$" $S timeout coder'
+check "no caps: no time box in the task"       '! $S task coder | grep -q "Time box"'
+set_cfg '.budget.max_agent_minutes=30 | .budget.max_session_minutes=10'
+check "session cap is tighter than agent cap"  'out_has "^SOURCE=session$" $S timeout coder && [[ "$($S timeout coder | sed -n "s/^TIMEOUT_SECONDS=//p")" -le 600 ]]'
+check "task carries a time box"                '$S task coder | grep -q "Time box: you have about 10 minutes"'
+set_cfg '.budget.max_session_minutes=60'
+check "agent cap applies when tighter"         'out_has "^SOURCE=agent$" $S timeout coder && out_has "^TIMEOUT_SECONDS=1800$" $S timeout coder'
+jq '.session_epoch = (.session_epoch - 4000)' .harness/.step_state.json > .harness/st && mv .harness/st .harness/.step_state.json
+check "used-up session cap reports EXPIRED"    'out_has "^EXPIRED=true$" $S timeout coder && out_has "^SOURCE=session$" $S timeout coder'
+$S end >/dev/null 2>&1
+
+new_project 1
+set_cfg '.budget.max_agent_minutes=0.03'
+FAKE_SLEEP=30 HARNESS_KILL_GRACE=1 .harness/run.sh --once >$LOGD/to.log 2>&1
+check "slow agent is stopped at its limit"     'grep -q "hit its time limit" $LOGD/to.log && grep -q "^TIMEOUT:" .harness/sessions/001-coder.log'
+check "timeout leaves a failure note"          'grep -q "coder failed: stopped at the time limit" .harness/sessions/001-notes.md'
+check "blocking timeout skips the later agents" '! grep -q "▶ tester" $LOGD/to.log'
+
+
 echo "phase 2: ralph --verify / --allow-blocked / --max-minutes"
 RSETUP="$ROOT/scripts/setup-ralph-loop.sh"
 export CLAUDE_CODE_SESSION_ID=s1   # isolate from the session running the tests
@@ -1217,6 +1241,60 @@ $S begin --new-run >/dev/null 2>$LOGD/f5.err
 check "a new run cleans up interrupted worktrees, keeping the work" 'grep -q "removed leftover worktree" $LOGD/f5.err && [[ ! -d .harness/worktrees/F002 ]] && out_has "interrupted worker leftovers" git log --oneline harness/wt-1-F002'
 $S unlock >/dev/null
 check "worktrees dir is git-ignored"          'grep -qxF "worktrees/" .harness/.gitignore'
+
+# ---- evaluator calibration and the read-only tester ----
+echo; echo "calibration + tester guard"
+new_project 2
+CAL=.harness/calibrate.sh
+check "setup seeds known-answer cases"        '[[ -f .harness/calibration/cases.json ]] && [[ "$(jq ".cases | length" .harness/calibration/cases.json)" -ge 10 ]]'
+check "calibrate run: seed cases all correct" '$CAL run --quiet >/dev/null'
+$CAL record F001 pass fail --case "empty input accepted" --category invalid_input >/dev/null
+$CAL record F002 fail pass --case "unicode name rejected" --category unicode >/dev/null
+$CAL record F001 fail fail --case "regression caught" --category regression >/dev/null
+check "report counts false positives and negatives" '[[ "$($CAL report --json | jq -c "[.false_positives, .false_negatives]")" == "[1,1]" ]]'
+check "report --check fails on a false positive" '! $CAL report --check >/dev/null 2>&1'
+check "regression detection rate is reported"   '[[ "$($CAL report --json | jq -r ".regression.detection_rate")" == 1 ]]'
+check "record rejects a bad verdict"            '! $CAL record F001 maybe pass --case x >/dev/null 2>&1'
+$FL claim F001 >/dev/null; $FL pass F001 >/dev/null; $FL fail F001 "broke later" >/dev/null
+check "scan finds a pass-then-fail candidate"   '[[ "$($CAL scan | tail -n1)" == *"1 new candidate"* ]]'
+cid="$(jq -r '.[0].id' .harness/calibration/candidates.json)"
+check "label false_positive records an outcome" '$CAL label "$cid" false_positive >/dev/null && [[ "$($CAL report --json | jq .false_positives)" == 2 ]]'
+check "coverage counts features without examples" '[[ "$($CAL report --json | jq .coverage.features_without_examples)" == 2 ]]'
+# a comparator that passes a known-bad case is caught, and a new run refuses to start
+new_project 1
+jq '.cases += [{"id":"K900","name":"engine blind spot","category":"other","expect":{"status":200},"actual":{"status":200},"truth":"fail"}]' .harness/calibration/cases.json > .harness/x && mv .harness/x .harness/calibration/cases.json
+check "run exits 2 on a false positive"        '$CAL run --quiet >/dev/null 2>&1; [[ $? -eq 2 ]]'
+check "begin --new-run stops with code 13"      'out_has "^CODE=13$" $S begin --new-run'
+set_trusted_cfg '.calibration.enabled = false'
+check "calibration can be disabled"            'out_has "^DECISION=continue$" $S begin --new-run'
+
+# tester read-only guard (fake tester edits the product)
+guard_project() { new_project 1; git add -A; git commit -qm base >/dev/null 2>&1 || true; }
+guard_project
+FAKE_MODE=testeredit .harness/run.sh --once >$LOGD/g1.log 2>&1
+check "tester edit of tracked source is reverted"  '[[ "$(cat src_F001.txt)" == "impl F001" ]]'
+check "tester that edited source cannot pass"      '[[ "$(st_of F001)" != PASS ]] && jq -r ".features[0].notes" .harness/feature_list.json | grep -q "modified product source"'
+check "the revert is committed (clean tree)"        '[[ -z "$(git status --porcelain)" ]]'
+guard_project
+FAKE_MODE=testerstray .harness/run.sh --once >$LOGD/g2.log 2>&1
+check "tester probe leftovers are removed"          '[[ ! -e probe-leftover.txt ]]'
+check "leftovers alone do not void the verdict"     '[[ "$(st_of F001)" == PASS ]]'
+guard_project
+FAKE_MODE=testerharness .harness/run.sh --once >$LOGD/g3.log 2>&1
+check "tester may write under .harness/"            '[[ "$(st_of F001)" == PASS ]] && out_has "harness: tester progress entry" git log --oneline'
+guard_project
+set_trusted_cfg '.tester.read_only = false'
+FAKE_MODE=testeredit .harness/run.sh --once >$LOGD/g4.log 2>&1
+check "tester.read_only=false disables the guard"   '[[ "$(cat src_F001.txt)" == *hacked* ]]'
+
+# structured findings reach the coder's next task
+new_project 1
+$FL claim F001 >/dev/null
+printf '[{"kind":"probe","criterion":"EX001","input":"empty name","expected":"400","observed":"500","severity":"major"}]' > $LOGD/findings.json
+check "report fail stores structured findings"      '.harness/report.sh F001 fail "500 on empty name" --findings $LOGD/findings.json >/dev/null && [[ "$(jq ".findings | length" .harness/evidence/F001/report.json)" == 1 ]]'
+$S begin --new-run >/dev/null 2>&1
+check "the coder task carries the tester findings"  'out_has "expected \"400\" observed \"500\"" $S task coder'
+check "report rejects a malformed findings file"    'echo "{}" > $LOGD/bad.json; ! .harness/report.sh F001 fail "x" --findings $LOGD/bad.json >/dev/null 2>&1'
 
 echo; echo "passed: $PASS  failed: $FAIL"
 [[ $FAIL -eq 0 ]]

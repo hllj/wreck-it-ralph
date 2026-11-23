@@ -28,7 +28,7 @@ Rules for `verify` commands:
 
 ```json
 "max_sessions": 100, "stuck_limit": 3, "escalate_after_failures": 3,
-"budget": { "max_cost_usd": 25, "max_tokens": 0, "max_wall_minutes": 480, "max_diff_lines": 800, "on_large_diff": "warn" },
+"budget": { "max_cost_usd": 25, "max_tokens": 0, "max_wall_minutes": 480, "max_session_minutes": 90, "max_agent_minutes": 45, "max_diff_lines": 800, "on_large_diff": "warn" },
 "final_verify_command": "npm test"
 ```
 

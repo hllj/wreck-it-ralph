@@ -131,6 +131,24 @@ record_usage() { # name jsonfile [model] [escalated] -> ledger line (tolerant: u
   "$STEP" "${a[@]}" >/dev/null 2>&1 || true
 }
 
+# Run a command with a wall-clock limit (macOS has no `timeout`). stdin passes through. TERM first, KILL after a
+# grace period. Returns 124 when the limit stopped it, otherwise the command's own exit code. 0 seconds = no limit.
+run_limited() { # seconds cmd args...
+  local secs="$1" pid wd flag rc=0; shift
+  if [[ "${secs:-0}" -le 0 ]]; then "$@"; return $?; fi
+  flag="$(mktemp "${TMPDIR:-/tmp}/harness-timeout.XXXXXX")"; rm -f "$flag"
+  "$@" <&0 & pid=$!
+  ( sleep "$secs"; : > "$flag"
+    pkill -TERM -P "$pid" 2>/dev/null || true; kill -TERM "$pid" 2>/dev/null || true
+    sleep "${HARNESS_KILL_GRACE:-10}"
+    pkill -KILL -P "$pid" 2>/dev/null || true; kill -KILL "$pid" 2>/dev/null || true ) >/dev/null 2>&1 &
+  wd=$!
+  wait "$pid" || rc=$?
+  kill "$wd" 2>/dev/null || true; wait "$wd" 2>/dev/null || true
+  if [[ -e "$flag" ]]; then rm -f "$flag"; return 124; fi
+  return $rc
+}
+
 # Run one pipeline step. Returns 0 ok, 1+ failed, 75 skipped (optional extension not available).
 run_agent() { # name task logfile
   local name="$1" task="$2" logfile="$3" sys="" json="${3%.log}.json" rc=0 info type optional
@@ -160,13 +178,26 @@ $task" ;;
     [[ -n "$left" ]] && args+=(--max-budget-usd "$left")
   fi
   # Task goes via stdin: variadic flags (--mcp-config) would swallow a positional prompt.
-  printf '%s' "$task" | "$CLAUDE_BIN" "${args[@]}" > "$json" 2> "$logfile" || rc=$?
+  local tl tsecs tsrc; tl="$("$STEP" timeout "$name" 2>/dev/null || true)"
+  tsecs="$(kv TIMEOUT_SECONDS "$tl")"; tsrc="$(kv SOURCE "$tl")"
+  if [[ "$(kv EXPIRED "$tl")" == true ]]; then
+    echo "time budget used up before '$name' started (budget.max_${tsrc}_minutes)" > "$logfile"
+    "$STEP" note "$name" failed "not started: budget.max_${tsrc}_minutes already used up" >/dev/null 2>&1 || true
+    return 124
+  fi
+  printf '%s' "$task" | run_limited "${tsecs:-0}" "$CLAUDE_BIN" "${args[@]}" > "$json" 2> "$logfile" || rc=$?
   # Human-readable log: the agent's final text, then stderr. Raw JSON (cost, usage) stays next to it.
   if jq -e 'type == "object" and has("result")' "$json" >/dev/null 2>&1; then
     { jq -r '.result // ""' "$json"; echo; cat "$logfile"; } > "$logfile.tmp" && mv "$logfile.tmp" "$logfile"
     [[ -n "${NO_RECORD:-}" ]] || record_usage "$name" "$json" "$model" "$(sed -n '1,/^---PROMPT---$/s/^ESCALATED=//p' <<<"$info" | head -n1)"
   else
     { cat "$json"; cat "$logfile"; } > "$logfile.tmp" && mv "$logfile.tmp" "$logfile"
+  fi
+  if [[ $rc -eq 124 ]]; then
+    local mins=$(( (${tsecs:-0} + 59) / 60 ))
+    echo "TIMEOUT: stopped after ${tsecs}s (budget.max_${tsrc}_minutes, about $mins min). Work already committed is kept; the session gate checks the rest." >> "$logfile"
+    log "   ⏱ $name hit its time limit (budget.max_${tsrc}_minutes) and was stopped"
+    "$STEP" note "$name" failed "stopped at the time limit (budget.max_${tsrc}_minutes, ${tsecs}s)" >/dev/null 2>&1 || true
   fi
   if [[ "$optional" == true ]] && grep -q "EXTENSION UNAVAILABLE" "$logfile"; then return 75; fi
   if [[ "$optional" == true && $rc -ne 0 ]]; then return 75; fi

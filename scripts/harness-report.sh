@@ -1,7 +1,7 @@
 #!/bin/bash
 # harness-report.sh - the tester's verdict, backed by replay evidence. "No evidence, no PASS."
 #
-# Usage: report.sh <ID> pass|fail|blocked|inconclusive "<note>"
+# Usage: report.sh <ID> pass|fail|blocked|inconclusive "<note>" [--findings <file.json>]
 #        report.sh check <ID> [--since ISO-TIME]
 #
 # pass          refused unless EVERY locked example of the feature has a passing replay result produced
@@ -29,7 +29,12 @@ SINCE=""
 if [[ "$MODE" == check ]]; then
   [[ "${1:-}" == "--since" ]] && SINCE="${2:-}"
 else
-  DECISION="${1:-}"; NOTE="${2:-}"
+  DECISION="${1:-}"; NOTE="${2:-}"; FINDINGS="[]"
+  if [[ "${3:-}" == "--findings" ]]; then
+    ff="${4:-}"; [[ -f "$ff" ]] || die "--findings needs a JSON file (an array of {kind, criterion, input, expected, observed, severity})"
+    jq -e 'type == "array" and all(.[]; type == "object")' "$ff" >/dev/null 2>&1 || die "$ff must be a JSON array of finding objects"
+    FINDINGS="$(jq -c . "$ff")"
+  fi
   case "$DECISION" in pass|fail|blocked|inconclusive) ;; *) die "decision must be pass, fail, blocked or inconclusive" ;; esac
   [[ "$DECISION" == pass || -n "$NOTE" ]] || die "$DECISION needs a note (what you saw / what blocks you / the question)"
   st="$HARNESS_DIR/.step_state.json"
@@ -86,8 +91,8 @@ if [[ "$cov" != null && -f "$HARNESS_DIR/coverage/$ID-ratchet.json" ]]; then
   cov="$(jq -c --slurpfile r "$HARNESS_DIR/coverage/$ID-ratchet.json" '. + {ratchet: ($r[0] | {verdict, mode, reason, regressions, baseline_commit})}' <<<"$cov")"
 fi
 jq -n --arg id "$ID" --arg s "$status" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$(git rev-parse HEAD 2>/dev/null || echo none)" \
-      --arg note "$NOTE" --argjson sum "$summary" --argjson r "$results" --argjson cov "$cov" \
-  '{feature_id: $id, status: $s, tested_at: $at, commit_sha: $sha, examples: $sum, coverage: $cov, note: $note, results: $r,
+      --arg note "$NOTE" --argjson findings "${FINDINGS:-[]}" --argjson sum "$summary" --argjson r "$results" --argjson cov "$cov" \
+  '{feature_id: $id, status: $s, tested_at: $at, commit_sha: $sha, examples: $sum, coverage: $cov, note: $note, findings: $findings, results: $r,
     replay: (["./.harness/replay.sh \($id)"] + ($r | map("./.harness/replay.sh \($id) --example \(.example)")))}' > "$DIR/report.json"
 {
   echo "# $ID: $(printf %s "$status" | tr a-z A-Z)"
@@ -95,6 +100,7 @@ jq -n --arg id "$ID" --arg s "$status" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "- Tested: $(jq -r .tested_at "$DIR/report.json") at commit $(jq -r .commit_sha "$DIR/report.json" | cut -c1-10)"
   echo "- Examples: $(jq -r '"\(.examples.passed)/\(.examples.total) passed, \(.examples.failed) failed, \(.examples.not_run) not run"' "$DIR/report.json")"
   [[ -n "$NOTE" ]] && echo "- Note: $NOTE"
+  jq -r 'if (.findings | length) > 0 then "\n## Findings for the coder\n" + ([.findings[] | "- [\(.severity // "?")/\(.kind // "?")] \(.criterion // "") input: \(.input | tojson) | expected: \(.expected | tojson) | observed: \(.observed | tojson)"] | join("\n")) else empty end' "$DIR/report.json"
   echo
   jq -r 'if .coverage then "- Coverage (\(.coverage.scope), \(.coverage.note)): lines \(.coverage.changed_files.lines.covered)/\(.coverage.changed_files.lines.total)" + (if .coverage.changed_files.branches then ", branches \(.coverage.changed_files.branches.covered)/\(.coverage.changed_files.branches.total)" else ", branches n/a" end) + (if .coverage.gaps then "; gaps \(.coverage.gaps.total), unclassified \(.coverage.gaps.unclassified)" else "" end) + (if .coverage.ratchet then "; ratchet \(.coverage.ratchet.verdict) (\(.coverage.ratchet.mode))" else "" end) else empty end' "$DIR/report.json"
   echo

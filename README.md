@@ -1,6 +1,8 @@
 # wreck-it-ralph
 
-> **Status: 0.0.7, a pre-release.** The harness has been exercised by its own test suite (`bash tests/run-tests.sh`) and by one small end-to-end run (a Python API, two sessions, three features). Expect rough edges, and read [Known limits](#known-limits) before relying on it. Earlier internal numbering (3.x) was reset to 0.0.1; see `CHANGELOG.md`.
+**English** · [Tiếng Việt](README.vi.md)
+
+> **Status: 0.0.8, a pre-release.** The harness has been exercised by its own test suite (`bash tests/run-tests.sh`) and by one small end-to-end run (a Python API, two sessions, three features). Expect rough edges, and read [Known limits](#known-limits) before relying on it. Earlier internal numbering (3.x) was reset to 0.0.1; see `CHANGELOG.md`.
 
 A Claude Code plugin for building software **gradually, over many sessions**, by combining three ideas:
 
@@ -186,6 +188,7 @@ begin gate ─▶ coder (fresh) ─▶ verify gate ─▶ tester (fresh) ─▶ 
 | 10 | A run budget is used up: `budget.max_cost_usd`, `max_tokens` or `max_wall_minutes` |
 | 11 | A session changed more than `budget.max_diff_lines` lines and `on_large_diff` is `stop` (review, then run again) |
 | 12 | Rollout branch problem: detached HEAD, an empty repository, or the branch was switched mid-run |
+| 13 | Evaluator calibration failed: the replay comparison passes a known-bad case (`calibrate.sh run`) |
 
 ### Budgets and the ledger
 
@@ -204,6 +207,8 @@ Every agent run is recorded in `.harness/ledger.jsonl`, which is git-ignored.
 - `/status`, the per-session log lines and `.harness/last-run.md` show what was spent. `.harness/step.sh ledger total` prints the totals.
 
 ## Testing: examples, replay, coverage
+
+Short overview in plain words: [docs/testing-and-verification.md](docs/testing-and-verification.md) ([Tiếng Việt](docs/testing-and-verification.vi.md)).
 
 The testing side of the harness is built on three rules: **no evidence, no PASS**; **coverage is visibility, not correctness**; and **agents point at gaps, humans decide**.
 
@@ -246,7 +251,36 @@ The tester gives its verdict with `.harness/report.sh <ID> <verdict> "<note>"`:
 | `blocked` | Could not be tested (app or environment). The feature stays claimed and no attempt is counted. If every claimed feature is blocked, the loop stops with code 9. |
 | `inconclusive` | Not enough evidence; becomes a question for you (`needs_human`). |
 
+`fail` also takes `--findings <file.json>`: a JSON array of `{kind, criterion, input, expected, observed, severity}`. The findings are stored in `report.json` and repeated in the coder's next task, so the coder gets what the tester observed instead of a paraphrase.
+
 At the end of a session the gate resets any feature with examples that passed without complete replay evidence. `report.json` and `report.md` in the evidence folder show the examples, the coverage and how you can replay it yourself.
+
+### The tester is read-only on the product
+
+The tester is meant to be an independent evaluator, so the harness does not leave that to its prompt. When the tester starts, the gate fingerprints the product tree (everything outside `.harness/`, as a git tree object); at the end of the session it fingerprints it again.
+
+- **Tracked source changed, or a new file was committed:** the gate puts every file back (and commits the revert), resets every feature that passed in that session to `failing` with the reason, and prints `TESTER_EDITED=<files>`. A verdict from a tester that edited the code under test is not evidence.
+- **Only new untracked files (probe leftovers):** they are removed and reported as a warning; verdicts stand.
+- The tester may write under `.harness/` (evidence, `progress.md`, `init.sh` fixes) and in a temp directory. A defect goes back to the coder as `report.sh <ID> fail "..." --findings <file>`.
+- `tester.allow_paths` (config) excludes paths from the check, for example a directory of generated fixtures. `tester.read_only: false` turns the guard off. Both are part of the trusted config.
+
+Limit: this detects and undoes a violation after the fact; it does not stop the tester process from writing during the session. A tool-level block would need per-agent path permissions that Claude Code does not offer for plugin agents. A project that wants a hard boundary can run the tester step in a separate checkout.
+
+### Evaluator calibration
+
+A harness is only as good as its verdicts, and the dangerous error is a **false positive**: the evaluator says PASS and the feature is broken. `.harness/calibrate.sh` measures it.
+
+| Source | What it is | Ground truth from |
+|---|---|---|
+| `comparator` | Known-answer cases fed through the replay comparison engine (`scripts/harness-compare.jq`): normal input, invalid input accepted, missing field, unicode, contract violation, extra field, regex, regression. Seeded in `.harness/calibration/cases.json`; add your own. | the case's `truth` |
+| `scan` | Features the tester passed that later failed. `calibrate.sh scan` lists them as candidates; you label each `false_positive`, `regression` (right when it passed, broken by a later change) or `dismiss`. | your label |
+| `human` | `calibrate.sh record <ID> <evaluator> <truth> --case "..." --category <c>` for a wrong verdict you found yourself. The tester uses it too when it finds that an earlier PASS was wrong. | you |
+
+`calibrate.sh report` shows false positives and their rate (per case whose truth is fail), false negatives and their rate, the regression detection rate, and acceptance-criteria coverage (locked examples with current passing replay evidence, and features with no examples at all). `report --check` exits 1 above `calibration.max_false_positive_rate` (default 0).
+
+The gate uses it in three places: a new run refuses to start (code 13) if the comparison engine passes a known-bad case; every session ends with a scan and a warning when features passed and later failed; and an agent that edits the calibration cases has them restored. `/wreck-it-ralph:doctor` and `status.sh` show the numbers.
+
+What this does not measure yet: the tester's own judgement (the LLM part). Its false-positive rate only comes from `scan` labels and `record`, so it is as complete as your labelling. Planted-defect runs (apply a known bug, check that the tester fails it) are not implemented.
 
 ### Coverage
 
@@ -457,7 +491,7 @@ The bundled `loop-design` skill teaches Claude how to set up and tune a loop: ve
   "max_sessions": 100,
   "stuck_limit": 3,
   "escalate_after_failures": 3,
-  "budget": { "max_cost_usd": 25, "max_tokens": 0, "max_wall_minutes": 480, "max_diff_lines": 800, "on_large_diff": "warn" },
+  "budget": { "max_cost_usd": 25, "max_tokens": 0, "max_wall_minutes": 480, "max_session_minutes": 90, "max_agent_minutes": 45, "max_diff_lines": 800, "on_large_diff": "warn" },
   "verify_static": "npm run lint && npx tsc --noEmit",
   "final_verify_command": "npm test",
   "permission_mode": "acceptEdits",
@@ -470,6 +504,8 @@ The bundled `loop-design` skill teaches Claude how to set up and tune a loop: ve
   ],
   "allow_dirty": false,
   "lock_timeout_minutes": 120,
+  "tester": { "read_only": true, "allow_paths": [] },
+  "calibration": { "enabled": true, "max_false_positive_rate": 0 },
   "replay": { "adapter": "", "base_url": "http://127.0.0.1:3000", "command": "", "timeout_seconds": 30 },
   "coverage": { "tool": "", "cmd": "", "format": "coveragepy", "runner": "", "branch": true, "omit": [], "max_gaps": 50, "mode": "report",
                 "ratchet": { "enabled": true, "scope": ["repository", "changed_files"], "allow_new_files": true, "tolerance": 0 } }
@@ -480,6 +516,7 @@ The bundled `loop-design` skill teaches Claude how to set up and tune a loop: ve
 - **`every`:** run the agent every N sessions.
 - **`when`:** `always`, `claimed` or `failing`. The verify gate runs before the first `claimed` step.
 - **No tester:** if the pipeline has no `tester`, claims that pass the verify gate are accepted as passes.
+- **`tester`:** `read_only` (default true) turns on the product-tree guard, `allow_paths` lists paths it ignores. **`calibration`:** `enabled` (default true) runs the known-answer cases at the start of a run, `max_false_positive_rate` is the limit for `calibrate.sh report --check`.
 - **`replay`:** `adapter` is `http` or `cli` (default from the preset: `api` and `web` use `http`, `cli` uses `cli`); `base_url` (or the `BASE_URL` environment variable) is the running app; `command` is the executable for the `cli` adapter.
 - **`coverage`:** `tool` is auto-detected (`go.mod` → go, `package.json` → node, Python markers → python); `cmd` and `format` replace the built-in runner; `runner` picks vitest, jest, c8 or nyc; `omit` takes globs; `mode` is `report` or `gate`.
 

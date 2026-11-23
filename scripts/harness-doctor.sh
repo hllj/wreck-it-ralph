@@ -53,6 +53,10 @@ if [[ -f "$HARNESS_DIR/feature_list.json" ]]; then
 else
   warn "no feature list yet: run /wreck-it-ralph:init \"<goal>\""
 fi
+if [[ "$(jq -r '.calibration.enabled | if . == null then true else . end' "$CFG" 2>/dev/null)" == true ]]; then
+  if cal_out="$("$PLUGIN_ROOT/scripts/harness-calibrate.sh" run --quiet 2>&1)"; then ok "evaluator calibration: $(tail -n1 <<<"$cal_out")"; else bad "evaluator calibration failed: $(tail -n1 <<<"$cal_out") (run .harness/calibrate.sh run)"; fi
+fi
+if [[ "$(jq -r '.tester.read_only | if . == null then true else . end' "$CFG" 2>/dev/null)" == true ]]; then ok "tester is read-only on the product (enforced by the gate)"; else warn "tester.read_only is false: the tester may edit product source"; fi
 if [[ -f pyproject.toml || -f setup.py || -f pytest.ini || -f requirements.txt ]] && [[ -z "$(jq -r '.coverage.cmd // ""' "$CFG" 2>/dev/null)" ]]; then
   py=python3; [[ -x .venv/bin/python ]] && py=.venv/bin/python
   if "$py" -m coverage --version >/dev/null 2>&1; then ok "coverage.py available ($py)"; else warn "coverage.py not installed for $py: the tester cannot report coverage gaps (install it into the project env, e.g. .venv/bin/pip install coverage pytest)"; fi
